@@ -274,3 +274,56 @@ class ErrorResponse(BaseModel):
     code: str
     message: str
     suggestion: str | None = None
+
+
+# ============================================================
+# Phase 5: Method Resolution
+# ============================================================
+
+class AncestorEntry(BaseModel):
+    name: str
+    type: str  # "self" | "concern" | "gem_module" | "active_record_internal" | "ruby_core"
+    source_file: str | None = None
+
+class MethodResolutionInput(BaseModel):
+    model_name: str
+    method_name: str | None = None
+    show_internal: bool = False
+
+class MethodResolutionOutput(BaseModel):
+    model_name: str
+    ancestors: list[AncestorEntry] = []
+    method_owner: str | None = None
+    super_chain: list[str] = []
+    monkey_patches: list[str] = []
+
+
+# ============================================================
+# Phase 5: Gem Introspect
+# ============================================================
+
+class GemMethod(BaseModel):
+    gem_name: str
+    method_name: str
+    source_file: str | None = None
+
+class GemCallback(BaseModel):
+    gem_name: str
+    kind: str
+    event: str
+    method_name: str
+
+class GemRoute(BaseModel):
+    gem_name: str
+    path: str
+    verb: str
+
+class GemIntrospectInput(BaseModel):
+    model_name: str
+    gem_name: str | None = None
+
+class GemIntrospectOutput(BaseModel):
+    model_name: str
+    gem_methods: list[GemMethod] = []
+    gem_callbacks: list[GemCallback] = []
+    gem_routes: list[GemRoute] = []

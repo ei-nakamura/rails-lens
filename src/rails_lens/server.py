@@ -7,7 +7,11 @@ from rails_lens.cache.manager import CacheManager
 from rails_lens.config import RailsLensConfig, load_config
 from rails_lens.tools.analyze_concern import register as register_analyze_concern
 from rails_lens.tools.dependency_graph import register as register_dep_graph
+from rails_lens.tools.explain_method_resolution import (
+    register as register_explain_method_resolution,
+)
 from rails_lens.tools.find_references import register as register_find_refs
+from rails_lens.tools.gem_introspect import register as register_gem_introspect
 from rails_lens.tools.get_routes import register as register_get_routes
 from rails_lens.tools.get_schema import register as register_get_schema
 from rails_lens.tools.introspect_model import register as register_introspect
@@ -55,6 +59,8 @@ register_get_schema(mcp, _ensure_initialized)
 register_get_routes(mcp, _ensure_initialized)
 register_analyze_concern(mcp, _ensure_initialized)
 register_refresh_cache(mcp, _ensure_initialized)
+register_explain_method_resolution(mcp, _ensure_initialized)
+register_gem_introspect(mcp, _ensure_initialized)
 
 
 def main() -> None:
