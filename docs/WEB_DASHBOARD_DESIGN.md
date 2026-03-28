@@ -464,4 +464,319 @@ REQUIREMENTS.md §9「将来の拡張計画」との整合性を確認する。
 
 ---
 
+---
+
+## 8. プロジェクト健全性ページ（circular_dependencies / dead_code 連携）
+
+### 8.1 ページ概要
+
+| 項目 | 内容 |
+|---|---|
+| **URL** | `GET /health` |
+| **目的** | プロジェクト全体の構造的健全性を可視化する。循環依存の有無とデッドコードの蓄積状況を一覧表示する |
+| **使用MCPツール** | `rails_lens_find_circular_dependencies`（循環依存検出）、`rails_lens_find_dead_code`（デッドコード検出） |
+
+### 8.2 表示内容
+
+#### 循環依存セクション
+
+- **ステータスバッジ**: 循環依存が検出されない場合は緑（✅ 循環依存なし）、1件以上検出された場合は赤（🔴 N件検出）を表示
+- **Mermaid graph 可視化**: `CircularDependenciesOutput.mermaid_diagram` を `<div class="mermaid">` タグに直接埋め込み、循環パスを有向グラフで表示する
+- **循環サマリーテーブル**: 各 `CyclePath` のモデル一覧（`models` フィールド）、循環種別（`cycle_type`）、深刻度（`severity`）を行単位で表示
+
+#### デッドコードセクション
+
+- **件数サマリー**: 検出件数（`total_dead_code_found`）と分析対象メソッド数（`total_methods_analyzed`）をカード表示
+- **信頼度分布**: `confidence = "high"` / `"medium"` ごとの件数をバッジ付きで表示
+- **デッドコード一覧テーブル**: `DeadCodeItem.type`（method/callback/scope）、ファイル名・行番号、`reason`、`dynamic_call_risk` フラグを列として表示
+
+### 8.3 内部APIエンドポイント追加
+
+| メソッド | パス | 処理内容 |
+|---|---|---|
+| `GET` | `/health` | 循環依存ステータス + デッドコードサマリー表示 |
+
+```python
+@app.get("/health", response_class=HTMLResponse)
+async def project_health(request: Request):
+    circular = await _call_circular_dependencies(format="mermaid")
+    dead_code = await _call_dead_code(scope="models", confidence="high")
+    return templates.TemplateResponse("health.html", {
+        "request": request,
+        "circular": circular,
+        "dead_code": dead_code,
+        "has_cycles": circular.total_cycles > 0,
+    })
+```
+
+---
+
+## 9. リクエストフローページ（data_flow 連携）
+
+### 9.1 ページ概要
+
+| 項目 | 内容 |
+|---|---|
+| **URL** | `GET /flow/{controller}/{action}` |
+| **目的** | 特定のコントローラ/アクションにおけるHTTPリクエストからDB保存までの全レイヤーのデータフローを可視化する |
+| **使用MCPツール** | `rails_lens_trace_data_flow` |
+
+### 9.2 表示内容
+
+- **エンドポイント選択UI**: `/flow` ページにコントローラ名・アクション名の入力フォームを配置し、`GET /flow/{controller}/{action}` へ遷移する
+- **Mermaid sequenceDiagram 表示**: `DataFlowOutput.mermaid_diagram` をそのまま `<div class="mermaid">` タグに埋め込む
+- **レイヤー別詳細テーブル**: `DataFlowOutput.flow_steps` の各 `DataFlowStep` を順序・レイヤー・説明・ファイル位置の列でテーブル表示する
+
+### 9.3 Mermaid出力要件
+
+`rails_lens_trace_data_flow` が返す `mermaid_diagram` は **sequenceDiagram 形式** に準拠すること:
+
+```
+sequenceDiagram
+    participant Client
+    participant Router
+    participant Controller as {ControllerName}
+    participant Params as StrongParameters
+    participant Model as {ModelName} Model
+    participant DB
+
+    Client->>Router: {HTTP動詞} {パス}
+    Router->>Controller: #{アクション名}
+    Controller->>Params: params.require(:{param_key}).permit(...)
+    Params->>Model: {ModelName}.new(permitted_params) / .update(...)
+    Model->>Model: {コールバック名} ({イベント名})
+    Model->>DB: {SQL操作}
+```
+
+- **参加者 (participant)** はレイヤー名を固定値として使用する: `Client`, `Router`, `Controller`, `Params`（StrongParameters）, `Model`, `DB`
+- ネストした `accepts_nested_attributes_for` が存在する場合は `participant NestedModel as {関連モデル名} Model` を追加する
+
+### 9.4 内部APIエンドポイント追加
+
+| メソッド | パス | 処理内容 |
+|---|---|---|
+| `GET` | `/flow` | エンドポイント選択フォーム表示 |
+| `GET` | `/flow/{controller}/{action}` | 指定コントローラ/アクションのデータフロー表示 |
+
+```python
+@app.get("/flow", response_class=HTMLResponse)
+async def flow_selector(request: Request):
+    return templates.TemplateResponse("flow_selector.html", {"request": request})
+
+@app.get("/flow/{controller}/{action}", response_class=HTMLResponse)
+async def request_flow(request: Request, controller: str, action: str):
+    flow = await _call_data_flow(controller_action=f"{controller}#{action}")
+    return templates.TemplateResponse("flow.html", {
+        "request": request,
+        "controller": controller,
+        "action": action,
+        "flow": flow,
+        "mermaid_code": flow.mermaid_diagram,
+    })
+```
+
+---
+
+## 10. 変更影響分析ページ（impact_analysis 連携）
+
+### 10.1 ページ概要
+
+| 項目 | 内容 |
+|---|---|
+| **URL** | `GET /impact/{model_name}` |
+| **目的** | 特定モデルのカラムまたはメソッドを変更した場合の影響範囲をカテゴリ別に可視化する |
+| **使用MCPツール** | `rails_lens_analyze_impact` |
+
+### 10.2 表示内容
+
+- **モデル名 + カラム/メソッド入力フォーム**: `/impact/{model_name}` ページに `target`（カラム名またはメソッド名）と `change_type`（remove/rename/type_change/modify）のフォームを配置し、`GET /impact/{model_name}?target=xxx&change_type=yyy` で結果を取得する
+- **影響範囲一覧（カテゴリ別）**: `ImpactAnalysisOutput.direct_impacts` を `category` フィールドでグループ化し、カテゴリタブ（validation / callback / view / mailer / scope / serializer / job / controller）ごとに表示する
+- **重大度バッジ**: 各 `ImpactItem.severity` に応じて 🔴（breaking）/ 🟡（warning）/ ⚪（info）のバッジを付与する
+- **修正が必要なファイル一覧**: `affected_files` をチェックリスト形式で表示する
+
+### 10.3 Mermaid出力要件
+
+`rails_lens_analyze_impact` は `ImpactAnalysisOutput` に `mermaid_diagram` フィールドを追加し、**graph LR 形式**で影響グラフを返すこと:
+
+```
+graph LR
+    Target["{model_name}.{target}"]
+    Target --> Validation["validation\n{ファイル名}:{行番号}"]
+    Target --> Callback["callback\n{ファイル名}:{行番号}"]
+    Target --> View["view\n{ファイル名}:{行番号}"]
+    Target --> Mailer["mailer\n{ファイル名}:{行番号}"]
+    style Target fill:#ff6666
+    style Validation fill:#ffaaaa
+```
+
+- 影響ノードは `severity` に応じて色付けする: `breaking` → `fill:#ffaaaa`、`warning` → `fill:#ffffaa`、`info` → `fill:#aaffaa`
+
+### 10.4 内部APIエンドポイント追加
+
+| メソッド | パス | 処理内容 |
+|---|---|---|
+| `GET` | `/impact/{model_name}` | モデル影響分析フォーム + 結果表示 |
+
+```python
+@app.get("/impact/{model_name}", response_class=HTMLResponse)
+async def impact_analysis(
+    request: Request,
+    model_name: str,
+    target: str | None = None,
+    change_type: str = "modify",
+):
+    result = None
+    if target:
+        result = await _call_impact_analysis(model_name, target, change_type)
+    return templates.TemplateResponse("impact.html", {
+        "request": request,
+        "model_name": model_name,
+        "target": target,
+        "change_type": change_type,
+        "result": result,
+    })
+```
+
+---
+
+## 11. リファクタリング支援ページ（extract_concern / dead_code 連携）
+
+### 11.1 ページ概要
+
+| 項目 | 内容 |
+|---|---|
+| **URL** | `GET /refactor/{model_name}` |
+| **目的** | Fat Modelのリファクタリングを支援する。Concern分割候補の可視化とデッドコードの一覧表示を組み合わせて提供する |
+| **使用MCPツール** | `rails_lens_suggest_extract_concern`（分割案）、`rails_lens_find_dead_code`（未使用コード） |
+
+### 11.2 表示内容
+
+#### Concern分割候補セクション
+
+- **凝集度クラスタ図（Mermaid graph）**: `ExtractConcernOutput.candidates` の各 `ConcernCandidate` をノードとし、`methods` と `shared_columns` をエッジで表した **graph TD 形式**のMermaid図を表示する
+- **クラスタカード一覧**: 各 `ConcernCandidate` について `suggested_name`（提案Concern名）、`methods`（対象メソッド一覧）、`shared_columns`（共通カラム）、`cohesion_score`（凝集度スコア）、`rationale`（根拠説明）をカード形式で表示する
+- **既存Concern重複警告**: `existing_concern_overlap` が存在する場合は黄色の警告バナーで表示する
+
+#### デッドコード一覧セクション
+
+- **対象モデルのデッドコード**: `rails_lens_find_dead_code(model_name={model_name})` の結果をテーブル表示する
+- **信頼度バッジ**: `DeadCodeItem.confidence` に応じて 🔴 high / 🟡 medium のバッジを付与する
+
+### 11.3 内部APIエンドポイント追加
+
+| メソッド | パス | 処理内容 |
+|---|---|---|
+| `GET` | `/refactor/{model_name}` | Concern分割案 + デッドコード表示 |
+
+```python
+@app.get("/refactor/{model_name}", response_class=HTMLResponse)
+async def refactor_support(request: Request, model_name: str):
+    concern_candidates = await _call_extract_concern(model_name)
+    dead_code = await _call_dead_code(scope="models", model_name=model_name)
+    return templates.TemplateResponse("refactor.html", {
+        "request": request,
+        "model_name": model_name,
+        "candidates": concern_candidates,
+        "dead_code": dead_code,
+    })
+```
+
+---
+
+## 12. Gem情報ページ（gem_introspect 連携）
+
+### 12.1 ページ概要
+
+| 項目 | 内容 |
+|---|---|
+| **URL** | `GET /gems/{gem_name}` |
+| **目的** | 特定Gemがモデルに追加する暗黙メソッド・コールバック・ルートを可視化し、アプリ固有の挙動とGem由来の挙動を区別する |
+| **使用MCPツール** | `rails_lens_gem_introspect` |
+
+### 12.2 表示内容
+
+- **Gem一覧ページ** (`/gems`): `rails_lens_gem_introspect()` を引数なしで呼び出し、影響の大きいGemの一覧を表示する。各GemはGem名リンク → `/gems/{gem_name}` に遷移する
+- **Gem由来の暗黙メソッド一覧**: `GemImpact.added_methods` を `type`（instance_method / class_method / scope）ごとにグループ化してテーブル表示する
+- **Gem由来のコールバック一覧**: `GemImpact.added_callbacks` を `kind`（before_save 等）と `event` でテーブル表示する
+- **Gem由来のルート一覧**: `GemImpact.added_routes` を `verb` / `path` / `controller#action` でテーブル表示する
+- **アプリ固有 vs Gem由来の区別表示**: `affected_models` の各モデルについて、モデル詳細ページ（`/models/{model_name}`）へのリンクとともに Gem由来コンポーネントのバッジを付与する
+- **オーバーライドされた既存メソッドの警告**: `overridden_methods` が存在する場合は赤色の警告バナーで表示する
+
+### 12.3 内部APIエンドポイント追加
+
+| メソッド | パス | 処理内容 |
+|---|---|---|
+| `GET` | `/gems` | 影響の大きいGem一覧表示 |
+| `GET` | `/gems/{gem_name}` | 特定Gemの詳細（メソッド/コールバック/ルート）表示 |
+
+```python
+@app.get("/gems", response_class=HTMLResponse)
+async def gems_list(request: Request):
+    result = await _call_gem_introspect()
+    return templates.TemplateResponse("gems.html", {
+        "request": request,
+        "gems": result.gems,
+    })
+
+@app.get("/gems/{gem_name}", response_class=HTMLResponse)
+async def gem_detail(request: Request, gem_name: str):
+    result = await _call_gem_introspect(gem_name=gem_name)
+    gem = result.gems[0] if result.gems else None
+    return templates.TemplateResponse("gem_detail.html", {
+        "request": request,
+        "gem_name": gem_name,
+        "gem": gem,
+    })
+```
+
+---
+
+## 13. Mermaid出力要件（Phase 5〜8実装指針）
+
+### 13.1 概要
+
+Phase 5〜8で実装する各ツール（`rails_lens_impact_analysis`、`rails_lens_data_flow`、`rails_lens_circular_dependencies`、`rails_lens_suggest_extract_concern`）は、Webダッシュボードへの統合を前提として `mermaid_diagram` フィールドを出力モデルに含めること。
+
+### 13.2 フォーマット要件一覧
+
+| ツール | Mermaidフォーマット | 用途 |
+|---|---|---|
+| `rails_lens_trace_data_flow` | `sequenceDiagram` | リクエストフローの時系列表現 |
+| `rails_lens_analyze_impact` | `graph LR` | 変更影響の有向グラフ（左→右） |
+| `rails_lens_find_circular_dependencies` | `graph TD` | 循環依存の有向グラフ（上→下） |
+| `rails_lens_suggest_extract_concern` | `graph TD` | Concern分割クラスタ図 |
+| 既存: `trace_callback_chain` | `sequenceDiagram` | コールバック実行順序（Phase 1〜4で実装済み） |
+| 既存: `dependency_graph` | `graph LR` | モデル依存グラフ（Phase 1〜4で実装済み） |
+
+### 13.3 共通インターフェース
+
+Webダッシュボードは各ツール出力モデルの `mermaid_diagram: str` フィールドを **そのまま** `<div class="mermaid">` タグに埋め込んでレンダリングする。ダッシュボード側では変換処理を行わない。
+
+**ツール側の実装責任**:
+
+```python
+# 各OutputモデルにはPydanticフィールドとして定義すること
+class XxxOutput(BaseModel):
+    ...
+    mermaid_diagram: str = ""   # 空文字列 = 図なし（正常ケース）
+```
+
+- `mermaid_diagram` フィールドは常に存在すること（`None` は不可、空文字列で代替する）
+- 図の生成に失敗した場合は空文字列を返し、例外を送出しないこと
+- 出力するMermaid記法は [Mermaid.js v10系](https://mermaid.js.org/) の構文に準拠すること
+
+### 13.4 sequenceDiagram 共通規則
+
+- **参加者ラベル**: スペースを含む場合は `participant X as "Label With Space"` 形式を使用
+- **メッセージ**: `->>`（実線矢印）= 同期呼び出し、`-->>`（破線矢印）= 非同期/レスポンス
+- **ノート**: 補足が必要な場合は `Note over X: テキスト` 形式を使用
+
+### 13.5 graph LR / graph TD 共通規則
+
+- **ノードID**: `snake_case` を使用し、`[ラベル]`（矩形）、`(ラベル)`（角丸矩形）、`{ラベル}`（菱形）でノード種別を表現
+- **エッジラベル**: `A -->|"ラベル"| B` 形式（ラベルに記号を含む場合はクォート）
+- **スタイリング**: `style NodeId fill:#色コード` で重大度や種別を色で表現する（赤系 = critical/breaking、黄系 = warning、緑系 = ok）
+
+---
+
 *設計書終端*
