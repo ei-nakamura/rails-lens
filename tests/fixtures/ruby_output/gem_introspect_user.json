@@ -1,0 +1,8 @@
+{
+  "model_name": "User",
+  "gem_methods": [
+    {"gem_name": "devise", "method_name": "authenticate!", "source_file": null}
+  ],
+  "gem_callbacks": [],
+  "gem_routes": []
+}

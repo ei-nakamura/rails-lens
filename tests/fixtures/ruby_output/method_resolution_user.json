@@ -1,0 +1,11 @@
+{
+  "model_name": "User",
+  "ancestors": [
+    {"name": "User", "type": "self", "source_file": "app/models/user.rb"},
+    {"name": "Authenticatable", "type": "concern", "source_file": "app/models/concerns/authenticatable.rb"},
+    {"name": "ActiveRecord::Base", "type": "active_record_internal", "source_file": null}
+  ],
+  "method_owner": null,
+  "super_chain": [],
+  "monkey_patches": []
+}
