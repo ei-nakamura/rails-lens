@@ -1,0 +1,6 @@
+{
+  "model_name": "User",
+  "scopes": ["active", "recent"],
+  "callbacks": ["before_save :normalize_email"],
+  "excluded_methods": ["normalize_email", "active", "recent"]
+}

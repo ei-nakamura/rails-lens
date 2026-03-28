@@ -411,3 +411,121 @@ class TestMappingOutput(BaseModel):
     indirect_tests: list[TestFile] = Field(default_factory=list)
     factories: list[TestFile] = Field(default_factory=list)
     run_command: str = ""  # "bundle exec rspec <files>" 形式
+
+
+# ============================================================
+# Phase 7: Dead Code Detection
+# ============================================================
+
+class DeadCodeInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    scope: str = Field(
+        "models",
+        description="Detection scope: models, controllers, all",
+    )
+    model_name: str | None = Field(
+        None,
+        description="Limit to specific model (optional)",
+    )
+    confidence: str = Field(
+        "high",
+        description="Confidence filter: high (certainly unused), medium (possibly dynamic)",
+    )
+
+
+class DeadCodeItem(BaseModel):
+    type: str              # "method", "callback", "scope", "validation"
+    name: str
+    file: str
+    line: int
+    confidence: str        # "high", "medium"
+    reason: str
+    reference_count: int = 0
+    dynamic_call_risk: bool = False
+
+
+class DeadCodeOutput(BaseModel):
+    scope: str
+    model_name: str | None = None
+    items: list[DeadCodeItem] = Field(default_factory=list)
+    total_methods_analyzed: int = 0
+    total_dead_code_found: int = 0
+    summary: str = ""
+
+
+# ============================================================
+# Phase 7: Circular Dependencies
+# ============================================================
+
+class CircularDependenciesInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    entry_point: str | None = Field(
+        None,
+        description="Filter cycles containing this model (optional)",
+    )
+    format: str = Field(
+        "mermaid",
+        description="Output format: mermaid or json",
+    )
+
+
+class CyclePath(BaseModel):
+    models: list[str]
+    edges: list[GraphEdge] = Field(default_factory=list)
+    cycle_type: str   # "callback_mutual", "association_bidirectional", "validation_cross_reference"
+    severity: str     # "critical", "warning"
+
+
+class CircularDependenciesOutput(BaseModel):
+    total_cycles: int = 0
+    cycles: list[CyclePath] = Field(default_factory=list)
+    mermaid_diagram: str | None = None
+    summary: str = ""
+
+
+# ============================================================
+# Phase 7: Extract Concern Candidate
+# ============================================================
+
+class ExtractConcernInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    model_name: str = Field(
+        ...,
+        description="ActiveRecord model name",
+        min_length=1,
+        max_length=200,
+    )
+    min_cluster_size: int = Field(
+        3,
+        description="Minimum number of methods in a cluster",
+        ge=2,
+        le=10,
+    )
+
+
+class MethodNode(BaseModel):
+    name: str
+    type: str  # "instance_method", "class_method"
+    accesses_columns: list[str] = Field(default_factory=list)
+    calls_methods: list[str] = Field(default_factory=list)
+    source_file: str
+    source_line: int
+    line_count: int = 0
+
+
+class ConcernCandidate(BaseModel):
+    suggested_name: str
+    methods: list[str]
+    shared_columns: list[str] = Field(default_factory=list)
+    cohesion_score: float = 0.0
+    rationale: str = ""
+    existing_concern_overlap: list[str] = Field(default_factory=list)
+
+
+class ExtractConcernOutput(BaseModel):
+    model_name: str
+    total_methods: int = 0
+    total_lines: int = 0
+    candidates: list[ConcernCandidate] = Field(default_factory=list)
+    unclustered_methods: list[str] = Field(default_factory=list)
+    summary: str = ""

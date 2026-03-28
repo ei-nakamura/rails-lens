@@ -1,0 +1,6 @@
+{
+  "cycles": [
+    {"models": ["User", "Order", "User"], "cycle_type": "association", "severity": "high"}
+  ],
+  "affected_models": ["User", "Order"]
+}
