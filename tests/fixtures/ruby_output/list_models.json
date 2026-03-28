@@ -1,0 +1,6 @@
+{
+  "models": [
+    {"name": "Post", "table_name": "posts", "file_path": "app/models/post.rb"},
+    {"name": "User", "table_name": "users", "file_path": "app/models/user.rb"}
+  ]
+}

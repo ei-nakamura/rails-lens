@@ -1,0 +1,36 @@
+{
+  "model_name": "User",
+  "table_name": "users",
+  "file_path": "app/models/user.rb",
+  "associations": [
+    {"name": "posts", "type": "has_many", "class_name": "Post",
+     "foreign_key": "user_id", "through": null, "polymorphic": false,
+     "dependent": "destroy", "has_scope": false}
+  ],
+  "callbacks": [
+    {"kind": "before", "event": "save", "method_name": "normalize_email",
+     "source_file": "app/models/user.rb", "source_line": 10,
+     "conditions": {}, "defined_in_concern": null}
+  ],
+  "validations": [
+    {"type": "presence_validator", "attributes": ["email"],
+     "options": {}, "custom_validator": null,
+     "source_file": "app/models/user.rb", "source_line": 5}
+  ],
+  "scopes": [],
+  "concerns": [],
+  "enums": [],
+  "schema": {
+    "columns": [
+      {"name": "id", "type": "integer", "null": false, "default": null, "limit": null},
+      {"name": "email", "type": "string", "null": false, "default": null, "limit": 255},
+      {"name": "created_at", "type": "datetime", "null": false, "default": null, "limit": null}
+    ],
+    "indexes": [{"name": "index_users_on_email", "columns": ["email"], "unique": true}],
+    "foreign_keys": []
+  },
+  "sti": null,
+  "delegations": [],
+  "class_methods": [],
+  "instance_methods": []
+}

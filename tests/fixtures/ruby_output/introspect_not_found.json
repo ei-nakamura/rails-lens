@@ -1,0 +1,7 @@
+{
+  "status": "error",
+  "error": {
+    "message": "Model 'NonExistentModel' not found.",
+    "details": {"all_models": ["Order", "Post", "User"]}
+  }
+}
