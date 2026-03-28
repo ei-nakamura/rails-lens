@@ -1,3 +1,5 @@
+[日本語](README_ja.md)
+
 # rails-lens
 
 MCP server that reveals implicit Rails dependencies for AI coding tools.
