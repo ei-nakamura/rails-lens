@@ -1,0 +1,16 @@
+{
+  "model_name": "User",
+  "lifecycle_event": "save",
+  "execution_order": [
+    {
+      "order": 1,
+      "kind": "before",
+      "event": "save",
+      "method_name": "normalize_email",
+      "source_file": "app/models/user.rb",
+      "source_line": 10,
+      "conditions": {},
+      "defined_in_concern": null
+    }
+  ]
+}
