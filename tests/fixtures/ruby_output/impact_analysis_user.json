@@ -1,0 +1,27 @@
+{
+  "model_name": "User",
+  "target": "email",
+  "change_type": "modify",
+  "target_type": "column",
+  "direct_impacts": [
+    {
+      "category": "validation",
+      "file": "app/models/user.rb",
+      "line": 5,
+      "description": "validates :email",
+      "severity": "warning",
+      "code_snippet": "validates :email, presence: true, uniqueness: true"
+    },
+    {
+      "category": "callback",
+      "file": "app/models/user.rb",
+      "line": 10,
+      "description": "normalize_email",
+      "severity": "info",
+      "code_snippet": "before_save :normalize_email"
+    }
+  ],
+  "cascade_effects": [],
+  "affected_files": ["app/models/user.rb"],
+  "summary": "2 direct impact(s) and 0 cascade effect(s) found for 'email' (modify)"
+}

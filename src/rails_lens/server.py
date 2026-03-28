@@ -14,9 +14,11 @@ from rails_lens.tools.find_references import register as register_find_refs
 from rails_lens.tools.gem_introspect import register as register_gem_introspect
 from rails_lens.tools.get_routes import register as register_get_routes
 from rails_lens.tools.get_schema import register as register_get_schema
+from rails_lens.tools.impact_analysis import register as register_impact_analysis
 from rails_lens.tools.introspect_model import register as register_introspect
 from rails_lens.tools.list_models import register as register_list_models
 from rails_lens.tools.refresh_cache import register as register_refresh_cache
+from rails_lens.tools.test_mapping import register as register_test_mapping
 from rails_lens.tools.trace_callback_chain import register as register_trace
 
 mcp = FastMCP(
@@ -61,6 +63,8 @@ register_analyze_concern(mcp, _ensure_initialized)
 register_refresh_cache(mcp, _ensure_initialized)
 register_explain_method_resolution(mcp, _ensure_initialized)
 register_gem_introspect(mcp, _ensure_initialized)
+register_impact_analysis(mcp, _ensure_initialized)
+register_test_mapping(mcp, _ensure_initialized)
 
 
 def main() -> None:

@@ -327,3 +327,87 @@ class GemIntrospectOutput(BaseModel):
     gem_methods: list[GemMethod] = []
     gem_callbacks: list[GemCallback] = []
     gem_routes: list[GemRoute] = []
+
+
+# ============================================================
+# Phase 6: Impact Analysis
+# ============================================================
+
+class ImpactAnalysisInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    model_name: str = Field(
+        ...,
+        description="ActiveRecord model name (e.g., 'User', 'Admin::Company')",
+        min_length=1,
+        max_length=200,
+    )
+    target: str = Field(
+        ...,
+        description="Column or method name to analyze impact for",
+        min_length=1,
+    )
+    change_type: str = Field(
+        "modify",
+        description="Type of change: remove, rename, type_change, modify",
+    )
+
+
+class ImpactItem(BaseModel):
+    category: str  # "callback", "validation", "scope", "view", "mailer",
+                   # "serializer", "job", "association_cascade", "controller"
+    file: str
+    line: int
+    description: str  # 人間可読な影響の説明
+    severity: str     # "breaking", "warning", "info"
+    code_snippet: str = ""  # 該当コード断片
+
+
+class CascadeEffect(BaseModel):
+    source_model: str
+    target_model: str
+    relation: str   # "dependent_destroy", "dependent_nullify", "touch", etc.
+    description: str
+
+
+class ImpactAnalysisOutput(BaseModel):
+    model_name: str
+    target: str
+    change_type: str
+    target_type: str                                         # "column" or "method"
+    direct_impacts: list[ImpactItem] = Field(default_factory=list)
+    cascade_effects: list[CascadeEffect] = Field(default_factory=list)
+    affected_files: list[str] = Field(default_factory=list)  # 修正が必要なファイル一覧
+    summary: str = ""
+
+
+# ============================================================
+# Phase 6: Test Mapping
+# ============================================================
+
+class TestMappingInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    target: str = Field(
+        ...,
+        description="Model name (e.g., 'User') or method spec (e.g., 'User#activate')",
+        min_length=1,
+    )
+    include_indirect: bool = Field(
+        True,
+        description="Include indirectly testing specs (shared_examples, feature specs)",
+    )
+
+
+class TestFile(BaseModel):
+    file: str
+    type: str       # "unit", "request", "feature", "shared_example", "factory"
+    relevance: str  # "direct", "indirect"
+    matched_examples: list[str] = Field(default_factory=list)  # テストケース名
+
+
+class TestMappingOutput(BaseModel):
+    target: str
+    test_framework: str  # "rspec" or "minitest"
+    direct_tests: list[TestFile] = Field(default_factory=list)
+    indirect_tests: list[TestFile] = Field(default_factory=list)
+    factories: list[TestFile] = Field(default_factory=list)
+    run_command: str = ""  # "bundle exec rspec <files>" 形式
