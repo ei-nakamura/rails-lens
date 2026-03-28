@@ -495,6 +495,55 @@ sequenceDiagram
 
 ---
 
+## Webダッシュボード
+
+rails-lensにはブラウザでRailsプロジェクト構造を可視化するWebダッシュボードが内蔵されています。
+
+### インストール
+
+```bash
+pip install rails-lens[web]
+```
+
+### 起動方法
+
+```bash
+uvicorn rails_lens.web.app:app --host 0.0.0.0 --port 8000
+```
+
+Pythonモジュールとして起動する場合:
+
+```bash
+python -m rails_lens.web
+```
+
+### ページ一覧
+
+**コア（6ページ）**
+| ページ | URL | 説明 |
+|--------|-----|------|
+| ダッシュボードTOP | `/` | プロジェクト概要、モデル数、キャッシュ状態 |
+| モデル一覧 | `/models` | 全モデルのカラム数・アソシエーション数 |
+| モデル詳細 | `/models/{name}` | スキーマ、コールバック、Mermaidコールバックチェーン |
+| ERダイアグラム | `/er` | エンティティ関連図（Mermaid erDiagram） |
+| 依存グラフ | `/graph/{name}` | モデル依存グラフ（Mermaid graph LR） |
+| キャッシュ管理 | `/cache` | キャッシュ状態、無効化コントロール |
+
+**拡張（5ページ）**
+| ページ | URL | 説明 |
+|--------|-----|------|
+| プロジェクトヘルス | `/health` | 循環依存・デッドコード概要 |
+| リクエストフロー | `/flow` | HTTPリクエスト→DBフロー（Mermaid sequenceDiagram） |
+| 影響範囲分析 | `/impact/{name}` | 変更影響範囲の可視化 |
+| リファクタリング支援 | `/refactor/{name}` | Concern切り出し候補 |
+| Gem情報 | `/gems` | インストール済みGemとRails統合情報 |
+
+### 技術スタック
+
+FastAPI + Jinja2 + [PicoCSS](https://picocss.com/) + [Mermaid.js](https://mermaid.js.org/)
+
+全ダイアグラムはMermaid.jsによりブラウザ上でレンダリングされます — サーバーサイドの画像生成は不要です。
+
 ## 設定
 
 ### Claude Code (`~/.claude/claude_desktop_config.json`)

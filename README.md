@@ -497,6 +497,55 @@ Provides migration context for a table: current schema, migration history, safet
 
 ---
 
+## Web Dashboard
+
+rails-lens includes a built-in web dashboard to visualize your Rails project structure in the browser.
+
+### Installation
+
+```bash
+pip install rails-lens[web]
+```
+
+### Usage
+
+```bash
+uvicorn rails_lens.web.app:app --host 0.0.0.0 --port 8000
+```
+
+Or using Python module:
+
+```bash
+python -m rails_lens.web
+```
+
+### Pages
+
+**Core (6 pages)**
+| Page | URL | Description |
+|------|-----|-------------|
+| Dashboard TOP | `/` | Project overview, model count, cache status |
+| Models List | `/models` | All models with column/association counts |
+| Model Detail | `/models/{name}` | Schema, callbacks, Mermaid callback chain |
+| ER Diagram | `/er` | Entity-Relationship diagram (Mermaid erDiagram) |
+| Dependency Graph | `/graph/{name}` | Model dependency graph (Mermaid graph LR) |
+| Cache Management | `/cache` | Cache status, invalidation controls |
+
+**Extended (5 pages)**
+| Page | URL | Description |
+|------|-----|-------------|
+| Project Health | `/health` | Circular dependencies + dead code overview |
+| Request Flow | `/flow` | HTTP request → DB flow (Mermaid sequenceDiagram) |
+| Impact Analysis | `/impact/{name}` | Change impact visualization |
+| Refactoring Support | `/refactor/{name}` | Concern extraction candidates |
+| Gem Info | `/gems` | Installed gems and their Rails integrations |
+
+### Tech Stack
+
+FastAPI + Jinja2 + [PicoCSS](https://picocss.com/) + [Mermaid.js](https://mermaid.js.org/)
+
+All diagrams are rendered in the browser via Mermaid.js — no server-side image generation needed.
+
 ## Configuration
 
 ### Claude Code (`~/.claude/claude_desktop_config.json`)

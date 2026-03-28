@@ -378,6 +378,7 @@ class ImpactAnalysisOutput(BaseModel):
     cascade_effects: list[CascadeEffect] = Field(default_factory=list)
     affected_files: list[str] = Field(default_factory=list)  # 修正が必要なファイル一覧
     summary: str = ""
+    mermaid_diagram: str = ""
 
 
 # ============================================================
@@ -529,6 +530,7 @@ class ExtractConcernOutput(BaseModel):
     candidates: list[ConcernCandidate] = Field(default_factory=list)
     unclustered_methods: list[str] = Field(default_factory=list)
     summary: str = ""
+    mermaid_diagram: str = ""
 
 
 # ============================================================
