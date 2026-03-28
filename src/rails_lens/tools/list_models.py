@@ -1,4 +1,4 @@
-"""rails_lens_find_references ツール"""
+"""rails_lens_list_models ツール"""
 from __future__ import annotations
 
 import json
@@ -8,12 +8,12 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from rails_lens.models import FindReferencesInput, FindReferencesOutput
+from rails_lens.models import ErrorResponse, ListModelsOutput, ModelSummary
 
 
 def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
     @mcp.tool(
-        name="rails_lens_find_references",
+        name="rails_lens_list_models",
         annotations=ToolAnnotations(
             readOnlyHint=True,
             destructiveHint=False,
@@ -21,23 +21,27 @@ def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
             openWorldHint=False,
         ),
     )
-    async def find_references(params: FindReferencesInput) -> str:
-        """コード参照検索"""
+    async def list_models() -> str:
+        """Railsアプリのモデル一覧を取得"""
         try:
             config, bridge, cache, grep = get_deps()
         except Exception as e:
-            from rails_lens.models import ErrorResponse
             return ErrorResponse(
                 code="INITIALIZATION_ERROR", message=str(e)
             ).model_dump_json(indent=2)
         try:
-            matches = grep.search(params.query, params.scope, params.type)
+            raw_data = await bridge.execute("list_models.rb", args=[])
+            models = [
+                ModelSummary(
+                    name=m.get("name", ""),
+                    table_name=m.get("table_name", ""),
+                    file_path=m.get("file_path", ""),
+                )
+                for m in raw_data.get("models", [])
+            ]
+            output = ListModelsOutput(models=models)
+            return json.dumps(output.model_dump(), ensure_ascii=False, indent=2)
         except Exception as e:
-            from rails_lens.models import ErrorResponse
             return ErrorResponse(
-                code="SEARCH_ERROR", message=str(e)
+                code="LIST_MODELS_ERROR", message=str(e)
             ).model_dump_json(indent=2)
-        output = FindReferencesOutput(
-            query=params.query, total_matches=len(matches), matches=matches
-        )
-        return json.dumps(output.model_dump(), ensure_ascii=False, indent=2)

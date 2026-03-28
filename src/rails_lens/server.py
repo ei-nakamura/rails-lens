@@ -8,6 +8,7 @@ from rails_lens.config import RailsLensConfig, load_config
 from rails_lens.tools.dependency_graph import register as register_dep_graph
 from rails_lens.tools.find_references import register as register_find_refs
 from rails_lens.tools.introspect_model import register as register_introspect
+from rails_lens.tools.list_models import register as register_list_models
 from rails_lens.tools.trace_callback_chain import register as register_trace
 
 mcp = FastMCP(
@@ -43,6 +44,7 @@ def _ensure_initialized() -> tuple[RailsLensConfig, RailsBridge, CacheManager, G
 # --- ツール登録 ---
 register_introspect(mcp, _ensure_initialized)
 register_find_refs(mcp, _ensure_initialized)
+register_list_models(mcp, _ensure_initialized)
 register_trace(mcp, _ensure_initialized)
 register_dep_graph(mcp, _ensure_initialized)
 
