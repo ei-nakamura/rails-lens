@@ -16,6 +16,44 @@ from rails_lens.models import (
 )
 
 
+async def dead_code_impl(
+    params: DeadCodeInput,
+    bridge: Any,
+    config: Any,
+) -> DeadCodeOutput:
+    """MCPデコレータなしで同じロジックを実行し、DeadCodeOutput を返す"""
+    excluded: list[str] = []
+    if params.model_name:
+        try:
+            raw = await bridge.execute(
+                "dead_code_check.rb",
+                args=[params.model_name, "false"],
+            )
+            excluded = raw.get("excluded_methods", [])
+        except Exception:
+            pass
+
+    detector = DeadCodeDetector(config)
+    items, total_analyzed = detector.detect(
+        scope=params.scope,
+        exclude=excluded,
+        model_name=params.model_name,
+        confidence_filter=params.confidence,
+    )
+    return DeadCodeOutput(
+        scope=params.scope,
+        model_name=params.model_name,
+        items=items,
+        total_methods_analyzed=total_analyzed,
+        total_dead_code_found=len(items),
+        summary=(
+            f"{len(items)} dead code item(s) found "
+            f"(confidence: {params.confidence}) "
+            f"out of {total_analyzed} method(s) analyzed"
+        ),
+    )
+
+
 def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
     @mcp.tool(
         name="rails_lens_dead_code",

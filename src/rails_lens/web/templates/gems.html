@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Gem一覧 - rails-lens{% endblock %}
+{% block content %}
+<h1>Gem一覧</h1>
+
+{% if gems_error %}
+<p class="error">エラー: {{ gems_error }}</p>
+{% elif gems %}
+    {% if gems.gem_names %}
+    <article>
+        <header>検出されたGem</header>
+        <table>
+            <thead><tr><th>Gem名</th><th>詳細</th></tr></thead>
+            <tbody>
+                {% for gem_name in gems.gem_names %}
+                <tr>
+                    <td>{{ gem_name }}</td>
+                    <td><a href="/gems/{{ gem_name }}">詳細を見る</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </article>
+    {% endif %}
+
+    {% if gems.gem_methods %}
+    <article>
+        <header>Gem由来のメソッド ({{ gems.gem_methods | length }}件)</header>
+        <table>
+            <thead><tr><th>Gem</th><th>メソッド名</th><th>ソースファイル</th></tr></thead>
+            <tbody>
+                {% for m in gems.gem_methods %}
+                <tr>
+                    <td><a href="/gems/{{ m.gem_name }}">{{ m.gem_name }}</a></td>
+                    <td><code>{{ m.method_name }}</code></td>
+                    <td>{{ m.source_file or "-" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </article>
+    {% endif %}
+{% else %}
+<p>データなし</p>
+{% endif %}
+{% endblock %}

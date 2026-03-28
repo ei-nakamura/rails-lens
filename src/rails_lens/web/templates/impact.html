@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}{{ model_name }} 影響分析 - rails-lens{% endblock %}
+{% block content %}
+<h1>{{ model_name }} 変更影響分析</h1>
+
+<form method="get">
+    <fieldset>
+        <label>カラム/メソッド名 (target)
+            <input type="text" name="target" value="{{ target or '' }}" placeholder="例: email, activate" required>
+        </label>
+        <label>変更種別 (change_type)
+            <select name="change_type">
+                {% for ct in ["modify", "remove", "rename", "type_change"] %}
+                <option value="{{ ct }}" {% if change_type == ct %}selected{% endif %}>{{ ct }}</option>
+                {% endfor %}
+            </select>
+        </label>
+    </fieldset>
+    <button type="submit">分析</button>
+</form>
+
+{% if result_error %}
+<p class="error">エラー: {{ result_error }}</p>
+{% elif result %}
+    <p>{{ result.summary }}</p>
+
+    {% if result.mermaid_diagram %}
+    <article>
+        <header>影響グラフ</header>
+        <pre class="mermaid">{{ result.mermaid_diagram }}</pre>
+    </article>
+    {% endif %}
+
+    {% if result.direct_impacts %}
+    <article>
+        <header>直接影響一覧</header>
+        <table>
+            <thead><tr><th>重大度</th><th>カテゴリ</th><th>説明</th><th>ファイル:行</th></tr></thead>
+            <tbody>
+                {% for impact in result.direct_impacts %}
+                <tr>
+                    <td>
+                        {% if impact.severity == "breaking" %}🔴
+                        {% elif impact.severity == "warning" %}🟡
+                        {% else %}⚪{% endif %}
+                        {{ impact.severity }}
+                    </td>
+                    <td>{{ impact.category }}</td>
+                    <td>{{ impact.description }}</td>
+                    <td><code>{{ impact.file }}:{{ impact.line }}</code></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </article>
+    {% endif %}
+
+    {% if result.affected_files %}
+    <article>
+        <header>修正が必要なファイル</header>
+        <ul>
+            {% for f in result.affected_files %}
+            <li><code>{{ f }}</code></li>
+            {% endfor %}
+        </ul>
+    </article>
+    {% endif %}
+{% endif %}
+{% endblock %}

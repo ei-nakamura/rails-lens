@@ -27,12 +27,27 @@ def create_app(bridge: Any, cache: Any, config: Any) -> FastAPI:
 
     # ルーター登録
     from rails_lens.web.routes import cache as cache_route
-    from rails_lens.web.routes import dashboard, er, graph, models
+    from rails_lens.web.routes import (
+        dashboard,
+        er,
+        flow,
+        gems,
+        graph,
+        health,
+        impact,
+        models,
+        refactor,
+    )
 
     app.include_router(dashboard.router)
     app.include_router(models.router)
     app.include_router(er.router)
     app.include_router(graph.router)
     app.include_router(cache_route.router)
+    app.include_router(health.router)
+    app.include_router(flow.router)
+    app.include_router(impact.router)
+    app.include_router(refactor.router)
+    app.include_router(gems.router)
 
     return app

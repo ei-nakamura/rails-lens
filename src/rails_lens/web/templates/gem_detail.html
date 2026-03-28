@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}{{ gem_name }} - Gem詳細 - rails-lens{% endblock %}
+{% block content %}
+<h1>{{ gem_name }}</h1>
+<p><a href="/gems">&larr; Gem一覧に戻る</a></p>
+
+{% if gem_error %}
+<p class="error">エラー: {{ gem_error }}</p>
+{% elif gem %}
+    {% if gem.gem_methods %}
+    <article>
+        <header>Gem由来のメソッド</header>
+        <table>
+            <thead><tr><th>メソッド名</th><th>ソースファイル</th></tr></thead>
+            <tbody>
+                {% for m in gem.gem_methods %}
+                {% if m.gem_name == gem_name %}
+                <tr>
+                    <td><code>{{ m.method_name }}</code></td>
+                    <td>{{ m.source_file or "-" }}</td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+    </article>
+    {% endif %}
+
+    {% if gem.gem_callbacks %}
+    <article>
+        <header>Gem由来のコールバック</header>
+        <table>
+            <thead><tr><th>種別</th><th>イベント</th><th>メソッド名</th></tr></thead>
+            <tbody>
+                {% for c in gem.gem_callbacks %}
+                {% if c.gem_name == gem_name %}
+                <tr>
+                    <td>{{ c.kind }}</td>
+                    <td>{{ c.event }}</td>
+                    <td><code>{{ c.method_name }}</code></td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+    </article>
+    {% endif %}
+
+    {% if gem.gem_routes %}
+    <article>
+        <header>Gem由来のルート</header>
+        <table>
+            <thead><tr><th>HTTP動詞</th><th>パス</th></tr></thead>
+            <tbody>
+                {% for r in gem.gem_routes %}
+                {% if r.gem_name == gem_name %}
+                <tr>
+                    <td>{{ r.verb }}</td>
+                    <td><code>{{ r.path }}</code></td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+    </article>
+    {% endif %}
+{% else %}
+<p>データなし</p>
+{% endif %}
+{% endblock %}

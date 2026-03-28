@@ -93,6 +93,102 @@ def _generate_mermaid_sequence(output: DataFlowOutput) -> str:
     return "\n".join(lines)
 
 
+async def data_flow_impl(
+    params: DataFlowInput,
+    bridge: Any,
+    grep: Any,
+) -> DataFlowOutput:
+    """MCPデコレータなしで同じロジックを実行し、DataFlowOutput を返す"""
+    identifier = params.controller_action or params.model_name or ""
+    raw_data = await bridge.execute(
+        "data_flow.rb",
+        args=[identifier, ""],
+    )
+
+    routes_raw = raw_data.get("routes", [])
+    callbacks_raw = raw_data.get("callbacks", [])
+
+    route: RouteInfo | None = None
+    if routes_raw:
+        r = routes_raw[0]
+        route = RouteInfo(
+            verb=r.get("verb", ""),
+            path=r.get("path", ""),
+            controller=r.get("controller", ""),
+            action=r.get("action", ""),
+        )
+
+    callbacks = [
+        CallbackTransform(
+            kind=cb.get("kind", ""),
+            method_name=cb.get("method_name", ""),
+            file=cb.get("file", ""),
+            line=cb.get("line", 0),
+            description=cb.get("description", ""),
+        )
+        for cb in callbacks_raw
+    ]
+
+    strong_params: StrongParamsInfo | None = None
+    try:
+        grep_results = grep.search("permit(", scope="controllers", search_type="any")
+        strong_params = _extract_strong_params(grep_results, identifier)
+    except Exception:
+        pass
+
+    flow_steps: list[DataFlowStep] = []
+    step_order = 1
+    if route:
+        flow_steps.append(DataFlowStep(
+            order=step_order,
+            layer="routing",
+            description=f"{route.verb} {route.path} → {route.controller}#{route.action}",
+            details={"verb": route.verb, "path": route.path},
+        ))
+        step_order += 1
+    if strong_params:
+        flow_steps.append(DataFlowStep(
+            order=step_order,
+            layer="strong_params",
+            description=f"permit({', '.join(strong_params.permitted_params[:5])})",
+            file=strong_params.file,
+            line=strong_params.line,
+        ))
+        step_order += 1
+    flow_steps.append(DataFlowStep(
+        order=step_order,
+        layer="assignment",
+        description="Model.new(permitted_params) — attribute assignment",
+    ))
+    step_order += 1
+    for cb in callbacks:
+        flow_steps.append(DataFlowStep(
+            order=step_order,
+            layer="callback",
+            description=cb.description,
+            file=cb.file or None,
+            line=cb.line or None,
+        ))
+        step_order += 1
+    flow_steps.append(DataFlowStep(
+        order=step_order,
+        layer="db",
+        description="SQL INSERT/UPDATE via ActiveRecord",
+    ))
+
+    output = DataFlowOutput(
+        entry_point=identifier,
+        attribute=params.attribute,
+        route=route,
+        strong_params=strong_params,
+        callbacks=callbacks,
+        flow_steps=flow_steps,
+        mermaid_diagram="",
+    )
+    output.mermaid_diagram = _generate_mermaid_sequence(output)
+    return output
+
+
 def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
     @mcp.tool(
         name="rails_lens_data_flow",

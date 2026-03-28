@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}リクエストフロー選択 - rails-lens{% endblock %}
+{% block content %}
+<h1>リクエストフロー</h1>
+<p>コントローラ名とアクション名を入力してデータフローを可視化します。</p>
+<form method="get" action="">
+    <fieldset>
+        <label>コントローラ名
+            <input type="text" name="controller" placeholder="例: UsersController" required>
+        </label>
+        <label>アクション名
+            <input type="text" name="action" placeholder="例: create" required>
+        </label>
+    </fieldset>
+    <button type="submit" id="flow-submit">表示</button>
+</form>
+<script>
+document.querySelector("form").addEventListener("submit", function(e) {
+    e.preventDefault();
+    const controller = this.querySelector("[name=controller]").value.trim();
+    const action = this.querySelector("[name=action]").value.trim();
+    if (controller && action) {
+        window.location.href = "/flow/" + encodeURIComponent(controller) + "/" + encodeURIComponent(action);
+    }
+});
+</script>
+{% endblock %}

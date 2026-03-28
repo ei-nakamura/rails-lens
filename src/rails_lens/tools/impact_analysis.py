@@ -16,6 +16,42 @@ from rails_lens.models import (
 )
 
 
+async def impact_analysis_impl(
+    params: ImpactAnalysisInput,
+    bridge: Any,
+    config: Any,
+) -> ImpactAnalysisOutput:
+    """MCPデコレータなしで同じロジックを実行し、ImpactAnalysisOutput を返す"""
+    raw_data = await bridge.execute(
+        "impact_analysis.rb",
+        args=[params.model_name, params.target, params.change_type],
+    )
+    output = ImpactAnalysisOutput(**raw_data)
+
+    try:
+        static_items: list[ImpactItem] = ImpactSearch(config).search(
+            params.model_name, params.target, params.change_type
+        )
+        existing_keys = {(i.file, i.line) for i in output.direct_impacts}
+        for item in static_items:
+            if (item.file, item.line) not in existing_keys:
+                output.direct_impacts.append(item)
+                existing_keys.add((item.file, item.line))
+    except Exception:
+        pass
+
+    output.affected_files = sorted(
+        {i.file for i in output.direct_impacts if i.file}
+    )
+    output.summary = (
+        f"{len(output.direct_impacts)} direct impact(s) and "
+        f"{len(output.cascade_effects)} cascade effect(s) found for "
+        f"'{params.target}' ({params.change_type})"
+    )
+    output.mermaid_diagram = _generate_mermaid_diagram(output)
+    return output
+
+
 def _generate_mermaid_diagram(output: ImpactAnalysisOutput) -> str:
     """影響範囲を Mermaid graph LR 形式で生成する"""
     lines = ["graph LR"]

@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}プロジェクト健全性 - rails-lens{% endblock %}
+{% block content %}
+<h1>プロジェクト健全性</h1>
+
+<section>
+    <h2>循環依存</h2>
+    {% if circular_error %}
+    <p class="error">エラー: {{ circular_error }}</p>
+    {% elif circular %}
+        {% if has_cycles %}
+        <span style="color:#c00">🔴 {{ circular.total_cycles }}件 検出</span>
+        {% else %}
+        <span style="color:#080">✅ 循環依存なし</span>
+        {% endif %}
+        <p>{{ circular.summary }}</p>
+        {% if circular.mermaid_diagram %}
+        <pre class="mermaid">{{ circular.mermaid_diagram }}</pre>
+        {% endif %}
+        {% if circular.cycles %}
+        <article>
+            <header>循環サマリー</header>
+            <table>
+                <thead><tr><th>モデル</th><th>種別</th><th>深刻度</th></tr></thead>
+                <tbody>
+                    {% for cycle in circular.cycles %}
+                    <tr>
+                        <td>{{ cycle.models | join(" → ") }}</td>
+                        <td>{{ cycle.cycle_type }}</td>
+                        <td>{{ cycle.severity }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </article>
+        {% endif %}
+    {% else %}
+    <p>データなし</p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>デッドコード</h2>
+    {% if dead_code_error %}
+    <p class="error">エラー: {{ dead_code_error }}</p>
+    {% elif dead_code %}
+    <div style="display:flex;gap:1rem;margin-bottom:1rem">
+        <article><strong>検出件数</strong><br>{{ dead_code.total_dead_code_found }}</article>
+        <article><strong>分析メソッド数</strong><br>{{ dead_code.total_methods_analyzed }}</article>
+    </div>
+    <p>{{ dead_code.summary }}</p>
+    {% if dead_code['items'] %}
+    <article>
+        <header>デッドコード一覧 (high confidence)</header>
+        <table>
+            <thead><tr><th>種別</th><th>ファイル:行</th><th>理由</th><th>動的呼出リスク</th></tr></thead>
+            <tbody>
+                {% for item in dead_code['items'] %}
+                <tr>
+                    <td>{{ item.type }}</td>
+                    <td><code>{{ item.file }}:{{ item.line }}</code></td>
+                    <td>{{ item.reason }}</td>
+                    <td>{{ "あり" if item.dynamic_call_risk else "なし" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </article>
+    {% endif %}
+    {% else %}
+    <p>データなし</p>
+    {% endif %}
+</section>
+{% endblock %}

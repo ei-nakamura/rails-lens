@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ controller }}#{{ action }} フロー - rails-lens{% endblock %}
+{% block content %}
+<h1>{{ controller }}#{{ action }} リクエストフロー</h1>
+<p><a href="/flow">&larr; フロー選択に戻る</a></p>
+
+{% if flow_error %}
+<p class="error">エラー: {{ flow_error }}</p>
+{% elif flow %}
+    {% if mermaid_code %}
+    <article>
+        <header>シーケンス図</header>
+        <pre class="mermaid">{{ mermaid_code }}</pre>
+    </article>
+    {% endif %}
+
+    {% if flow.flow_steps %}
+    <article>
+        <header>レイヤー別詳細</header>
+        <table>
+            <thead><tr><th>#</th><th>レイヤー</th><th>説明</th><th>ファイル:行</th></tr></thead>
+            <tbody>
+                {% for step in flow.flow_steps %}
+                <tr>
+                    <td>{{ step.order }}</td>
+                    <td><code>{{ step.layer }}</code></td>
+                    <td>{{ step.description }}</td>
+                    <td>{% if step.file %}<code>{{ step.file }}{% if step.line %}:{{ step.line }}{% endif %}</code>{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </article>
+    {% endif %}
+{% else %}
+<p>データなし</p>
+{% endif %}
+{% endblock %}

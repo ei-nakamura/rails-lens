@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}{{ model_name }} リファクタリング支援 - rails-lens{% endblock %}
+{% block content %}
+<h1>{{ model_name }} リファクタリング支援</h1>
+
+<section>
+    <h2>Concern分割候補</h2>
+    {% if concern_error %}
+    <p class="error">エラー: {{ concern_error }}</p>
+    {% elif candidates %}
+        <p>{{ candidates.summary }}</p>
+        {% if candidates.mermaid_diagram %}
+        <pre class="mermaid">{{ candidates.mermaid_diagram }}</pre>
+        {% endif %}
+        {% if candidates.candidates %}
+            {% for candidate in candidates.candidates %}
+            <article>
+                <header>{{ candidate.suggested_name }} <small>(凝集度: {{ "%.2f"|format(candidate.cohesion_score) }})</small></header>
+                <p>{{ candidate.rationale }}</p>
+                <p><strong>対象メソッド:</strong> {{ candidate.methods | join(", ") }}</p>
+                {% if candidate.shared_columns %}
+                <p><strong>共通カラム:</strong> {{ candidate.shared_columns | join(", ") }}</p>
+                {% endif %}
+                {% if candidate.existing_concern_overlap %}
+                <p style="color:#880">⚠️ 既存Concernと重複: {{ candidate.existing_concern_overlap | join(", ") }}</p>
+                {% endif %}
+            </article>
+            {% endfor %}
+        {% else %}
+        <p>分割候補なし</p>
+        {% endif %}
+    {% else %}
+    <p>データなし</p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>デッドコード</h2>
+    {% if dead_code_error %}
+    <p class="error">エラー: {{ dead_code_error }}</p>
+    {% elif dead_code and dead_code['items'] %}
+    <p>{{ dead_code.summary }}</p>
+    <table>
+        <thead><tr><th>信頼度</th><th>種別</th><th>ファイル:行</th><th>理由</th></tr></thead>
+        <tbody>
+            {% for item in dead_code['items'] %}
+            <tr>
+                <td>
+                    {% if item.confidence == "high" %}🔴{% else %}🟡{% endif %}
+                    {{ item.confidence }}
+                </td>
+                <td>{{ item.type }}</td>
+                <td><code>{{ item.file }}:{{ item.line }}</code></td>
+                <td>{{ item.reason }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% elif dead_code %}
+    <p>デッドコードなし</p>
+    {% else %}
+    <p>データなし</p>
+    {% endif %}
+</section>
+{% endblock %}

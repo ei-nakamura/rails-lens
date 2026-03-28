@@ -16,6 +16,60 @@ from rails_lens.models import (
 )
 
 
+def _generate_concern_mermaid(output: ExtractConcernOutput) -> str:
+    """Concern分割クラスタを Mermaid graph TD 形式で生成する"""
+    lines = ["graph TD"]
+    lines.append(f'  ROOT["{output.model_name}"]')
+    for i, c in enumerate(output.candidates):
+        node_id = f"C{i}"
+        lines.append(f'  {node_id}["{c.suggested_name}"]')
+        lines.append(f"  ROOT --> {node_id}")
+        for j, m in enumerate(c.methods[:5]):
+            m_id = f"M{i}_{j}"
+            lines.append(f'  {m_id}("{m}")')
+            lines.append(f"  {node_id} --> {m_id}")
+    return "\n".join(lines)
+
+
+async def extract_concern_impl(
+    params: ExtractConcernInput,
+    cache: Any,
+    config: Any,
+) -> ExtractConcernOutput:
+    """MCPデコレータなしで同じロジックを実行し、ExtractConcernOutput を返す"""
+    existing_concerns: list[str] = []
+    try:
+        cached = cache.get(params.model_name)
+        if cached:
+            existing_concerns = [
+                m for m in cached.get("included_modules", [])
+                if "Concern" in m or "concern" in m.lower()
+            ]
+    except Exception:
+        pass
+
+    extractor = ConcernExtractor(config)
+    candidates, total_methods, total_lines, unclustered = extractor.extract(
+        model_name=params.model_name,
+        min_cluster_size=params.min_cluster_size,
+        existing_concerns=existing_concerns,
+    )
+    output = ExtractConcernOutput(
+        model_name=params.model_name,
+        total_methods=total_methods,
+        total_lines=total_lines,
+        candidates=candidates,
+        unclustered_methods=unclustered,
+        summary=(
+            f"{len(candidates)} Concern candidate(s) identified "
+            f"from {total_methods} method(s) in {params.model_name} "
+            f"({total_lines} lines)"
+        ),
+    )
+    output.mermaid_diagram = _generate_concern_mermaid(output)
+    return output
+
+
 def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
     @mcp.tool(
         name="rails_lens_extract_concern_candidate",

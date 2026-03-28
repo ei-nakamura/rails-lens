@@ -10,6 +10,18 @@ from mcp.types import ToolAnnotations
 from rails_lens.models import ErrorResponse, GemIntrospectInput, GemIntrospectOutput
 
 
+async def gem_introspect_impl(
+    params: GemIntrospectInput,
+    bridge: Any,
+) -> GemIntrospectOutput:
+    """MCPデコレータなしで同じロジックを実行し、GemIntrospectOutput を返す"""
+    raw_data = await bridge.execute(
+        "gem_introspect.rb",
+        args=[params.model_name, params.gem_name or ""],
+    )
+    return GemIntrospectOutput(**raw_data)
+
+
 def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
     @mcp.tool(
         name="rails_lens_gem_introspect",

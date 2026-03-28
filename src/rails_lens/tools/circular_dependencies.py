@@ -47,6 +47,35 @@ def _generate_mermaid_diagram(output: CircularDependenciesOutput) -> str:
     return "\n".join(lines)
 
 
+async def circular_dependencies_impl(
+    params: CircularDependenciesInput,
+    bridge: Any,
+) -> CircularDependenciesOutput:
+    """MCPデコレータなしで同じロジックを実行し、CircularDependenciesOutput を返す"""
+    entry_arg = params.entry_point or ""
+    raw = await bridge.execute(
+        "circular_dependencies.rb",
+        args=[entry_arg],
+    )
+    cycles: list[CyclePath] = []
+    for c in raw.get("cycles", []):
+        edges = [GraphEdge.model_validate(e) for e in c.get("edges", [])]
+        cycles.append(CyclePath(
+            models=c["models"],
+            edges=edges,
+            cycle_type=c.get("cycle_type", "unknown"),
+            severity=c.get("severity", "warning"),
+        ))
+    output = CircularDependenciesOutput(
+        total_cycles=raw.get("total_cycles", len(cycles)),
+        cycles=cycles,
+        summary=raw.get("summary", f"{len(cycles)} cycle(s) detected"),
+    )
+    if params.format == "mermaid":
+        output.mermaid_diagram = _generate_mermaid_diagram(output)
+    return output
+
+
 def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
     @mcp.tool(
         name="rails_lens_circular_dependencies",
