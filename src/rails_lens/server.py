@@ -5,10 +5,14 @@ from rails_lens.analyzers.grep_search import GrepSearch
 from rails_lens.bridge.runner import RailsBridge
 from rails_lens.cache.manager import CacheManager
 from rails_lens.config import RailsLensConfig, load_config
+from rails_lens.tools.analyze_concern import register as register_analyze_concern
 from rails_lens.tools.dependency_graph import register as register_dep_graph
 from rails_lens.tools.find_references import register as register_find_refs
+from rails_lens.tools.get_routes import register as register_get_routes
+from rails_lens.tools.get_schema import register as register_get_schema
 from rails_lens.tools.introspect_model import register as register_introspect
 from rails_lens.tools.list_models import register as register_list_models
+from rails_lens.tools.refresh_cache import register as register_refresh_cache
 from rails_lens.tools.trace_callback_chain import register as register_trace
 
 mcp = FastMCP(
@@ -47,6 +51,10 @@ register_find_refs(mcp, _ensure_initialized)
 register_list_models(mcp, _ensure_initialized)
 register_trace(mcp, _ensure_initialized)
 register_dep_graph(mcp, _ensure_initialized)
+register_get_schema(mcp, _ensure_initialized)
+register_get_routes(mcp, _ensure_initialized)
+register_analyze_concern(mcp, _ensure_initialized)
+register_refresh_cache(mcp, _ensure_initialized)
 
 
 def main() -> None:
