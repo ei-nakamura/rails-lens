@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}ER図 - rails-lens{% endblock %}
+{% block content %}
+<h1>ER図</h1>
+<form method="get" action="/er">
+    <div class="grid">
+        <input type="text" name="focus" placeholder="フォーカスするモデル名（任意）" value="{{ focus or '' }}">
+        <button type="submit">絞り込み</button>
+        {% if focus %}<a href="/er" role="button" class="secondary">リセット</a>{% endif %}
+    </div>
+</form>
+<pre class="mermaid">{{ mermaid_code }}</pre>
+{% endblock %}

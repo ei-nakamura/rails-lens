@@ -1,0 +1,3 @@
+/* PicoCSS カスタマイズ */
+.mermaid { overflow-x: auto; }
+pre.mermaid { background: transparent; border: none; }

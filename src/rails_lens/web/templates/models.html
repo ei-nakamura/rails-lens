@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}モデル一覧 - rails-lens{% endblock %}
+{% block content %}
+<h1>モデル一覧</h1>
+<table>
+    <thead>
+        <tr>
+            <th>モデル名</th>
+            <th>テーブル名</th>
+            <th>ファイルパス</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for model in models %}
+        <tr>
+            <td><a href="/models/{{ model.name }}">{{ model.name }}</a></td>
+            <td>{{ model.table_name }}</td>
+            <td><code>{{ model.file_path }}</code></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3">モデルが見つかりません</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

@@ -11,6 +11,13 @@ from mcp.types import ToolAnnotations
 from rails_lens.models import ErrorResponse
 
 
+def refresh_cache_impl(cache: Any, tool_name: str = "") -> dict[str, str]:
+    """MCPデコレータなしで同じロジックを実行し、dict を返す"""
+    cache.invalidate_all()
+    message = f"Cache invalidated for tool: {tool_name}" if tool_name else "All caches invalidated"
+    return {"status": "ok", "message": message}
+
+
 def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
     @mcp.tool(
         name="rails_lens_refresh_cache",

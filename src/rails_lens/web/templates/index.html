@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}rails-lens Dashboard{% endblock %}
+{% block content %}
+<h1>rails-lens Dashboard</h1>
+<div class="grid">
+    <article>
+        <header>プロジェクト情報</header>
+        <p><strong>プロジェクトルート:</strong> {{ project_root }}</p>
+        <p><strong>バージョン:</strong> {{ version }}</p>
+    </article>
+    <article>
+        <header>モデル統計</header>
+        <p><strong>検出モデル数:</strong> {{ model_count }}</p>
+        <p><a href="/models" role="button">モデル一覧を見る</a></p>
+    </article>
+</div>
+<article>
+    <header>キャッシュ状態</header>
+    {% if cache_stats %}
+    <table>
+        <tbody>
+            {% for key, value in cache_stats.items() %}
+            <tr><th>{{ key }}</th><td>{{ value }}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>キャッシュ情報なし</p>
+    {% endif %}
+    <p><a href="/cache" role="button" class="secondary">キャッシュ管理</a></p>
+</article>
+{% endblock %}

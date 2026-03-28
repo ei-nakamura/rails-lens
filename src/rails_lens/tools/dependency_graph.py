@@ -18,6 +18,50 @@ from rails_lens.models import (
 )
 
 
+async def dependency_graph_impl(
+    params: DependencyGraphInput,
+    bridge: Any,
+) -> DependencyGraphOutput:
+    """MCPデコレータなしで同じロジックを実行し、DependencyGraphOutput を返す"""
+    nodes: list[GraphNode] = []
+    edges: list[GraphEdge] = []
+    visited: set[str] = set()
+    max_depth = min(params.depth, 3)
+
+    async def explore(model_name: str, current_depth: int) -> None:
+        if model_name in visited or current_depth > max_depth:
+            return
+        visited.add(model_name)
+        try:
+            raw_data = await bridge.execute("introspect_model.rb", args=[model_name])
+        except RailsLensError:
+            return
+        file_path = raw_data.get("file_path", "")
+        nodes.append(GraphNode(id=model_name, type="model", file_path=file_path))
+        for assoc in raw_data.get("associations", []):
+            target = assoc.get("class_name", "")
+            if not target:
+                continue
+            edges.append(GraphEdge.model_validate({
+                "from": model_name,
+                "to": target,
+                "relation": "association",
+                "label": assoc.get("type", ""),
+            }))
+            if current_depth < max_depth:
+                await explore(target, current_depth + 1)
+
+    await explore(params.entry_point, 1)
+    mermaid = _generate_mermaid_graph(nodes, edges)
+    return DependencyGraphOutput(
+        entry_point=params.entry_point,
+        depth=params.depth,
+        nodes=nodes,
+        edges=edges,
+        mermaid_diagram=mermaid,
+    )
+
+
 def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
     @mcp.tool(
         name="rails_lens_dependency_graph",

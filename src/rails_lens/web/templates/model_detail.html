@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ model.model_name }} - rails-lens{% endblock %}
+{% block content %}
+<h1>{{ model.model_name }}</h1>
+<p><code>{{ model.file_path }}</code> / テーブル: <strong>{{ model.table_name }}</strong></p>
+
+{% if model.associations %}
+<article>
+    <header>アソシエーション</header>
+    <table>
+        <thead><tr><th>種別</th><th>対象クラス</th><th>名前</th></tr></thead>
+        <tbody>
+            {% for assoc in model.associations %}
+            <tr>
+                <td>{{ assoc.type or assoc.macro }}</td>
+                <td>{{ assoc.class_name or assoc.klass }}</td>
+                <td>{{ assoc.name }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</article>
+{% endif %}
+
+{% if model.validations %}
+<article>
+    <header>バリデーション</header>
+    <table>
+        <thead><tr><th>属性</th><th>種別</th></tr></thead>
+        <tbody>
+            {% for v in model.validations %}
+            <tr><td>{{ v.attributes | join(", ") }}</td><td>{{ v.kind }}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</article>
+{% endif %}
+
+{% if model.scopes %}
+<article>
+    <header>スコープ</header>
+    <ul>{% for s in model.scopes %}<li>{{ s.name }}</li>{% endfor %}</ul>
+</article>
+{% endif %}
+
+<article>
+    <header>依存関係グラフ</header>
+    <p><a href="/graph/{{ model.model_name }}" role="button" class="secondary">依存関係グラフを表示</a></p>
+</article>
+
+{% for event, chain in callback_chains.items() %}
+{% if chain and chain.mermaid_diagram %}
+<article>
+    <header>コールバック連鎖: {{ event }}</header>
+    <pre class="mermaid">{{ chain.mermaid_diagram }}</pre>
+</article>
+{% endif %}
+{% endfor %}
+{% endblock %}

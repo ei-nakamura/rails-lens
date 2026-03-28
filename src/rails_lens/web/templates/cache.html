@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}キャッシュ管理 - rails-lens{% endblock %}
+{% block content %}
+<h1>キャッシュ管理</h1>
+<form method="post" action="/cache/invalidate">
+    <button type="submit" class="contrast">全キャッシュを無効化</button>
+</form>
+<hr>
+{% if entries %}
+<table>
+    <thead>
+        <tr><th>ツール名</th><th>最終更新</th><th>操作</th></tr>
+    </thead>
+    <tbody>
+        {% for entry in entries %}
+        <tr>
+            <td>{{ entry.tool_name if entry.tool_name is defined else entry }}</td>
+            <td>{{ entry.updated_at if entry.updated_at is defined else "-" }}</td>
+            <td>
+                <form method="post" action="/cache/invalidate/{{ entry.tool_name if entry.tool_name is defined else entry }}" style="display:inline">
+                    <button type="submit" class="secondary">無効化</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>キャッシュエントリがありません</p>
+{% endif %}
+{% endblock %}

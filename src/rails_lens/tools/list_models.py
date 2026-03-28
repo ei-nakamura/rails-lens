@@ -11,6 +11,20 @@ from mcp.types import ToolAnnotations
 from rails_lens.models import ErrorResponse, ListModelsOutput, ModelSummary
 
 
+async def list_models_impl(bridge: Any) -> ListModelsOutput:
+    """MCPデコレータなしで同じロジックを実行し、ListModelsOutput を返す"""
+    raw_data = await bridge.execute("list_models.rb", args=[])
+    models = [
+        ModelSummary(
+            name=m.get("name", ""),
+            table_name=m.get("table_name", ""),
+            file_path=m.get("file_path", ""),
+        )
+        for m in raw_data.get("models", [])
+    ]
+    return ListModelsOutput(models=models)
+
+
 def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
     @mcp.tool(
         name="rails_lens_list_models",

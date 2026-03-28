@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{{ model_name }} 依存関係グラフ - rails-lens{% endblock %}
+{% block content %}
+<h1>{{ model_name }} 依存関係グラフ</h1>
+<form method="get" action="/graph/{{ model_name }}">
+    <label for="depth">深さ: {{ depth }}</label>
+    <input type="range" id="depth" name="depth" min="1" max="5" value="{{ depth }}"
+           oninput="this.previousElementSibling.textContent='深さ: ' + this.value">
+    <button type="submit">更新</button>
+</form>
+<pre class="mermaid">{{ mermaid_code }}</pre>
+{% endblock %}

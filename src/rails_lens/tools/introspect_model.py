@@ -5,7 +5,7 @@ import json
 import logging
 from collections.abc import Callable
 from difflib import get_close_matches
-from typing import Any
+from typing import Any, cast
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -67,6 +67,35 @@ def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
 
         # 4. セクションフィルタリング & 返却
         return _filter_sections(raw_data, params.sections)
+
+
+async def introspect_model_impl(
+    params: IntrospectModelInput,
+    bridge: Any,
+    cache: Any,
+) -> dict[str, Any]:
+    """MCPデコレータなしで同じロジックを実行し、dict を返す"""
+    model_name = params.model_name
+
+    cached = cache.get("introspect_model", model_name)
+    if cached is not None:
+        if params.sections is None:
+            return cast(dict[str, Any], cached)
+        return {
+            k: v for k, v in cached.items()
+            if k in params.sections or k in ("model_name", "table_name", "file_path")
+        }
+
+    raw_data = await bridge.execute("introspect_model.rb", args=[model_name])
+    source_files = _extract_source_files(raw_data, model_name)
+    cache.set("introspect_model", model_name, raw_data, source_files)
+
+    if params.sections is None:
+        return cast(dict[str, Any], raw_data)
+    return {
+        k: v for k, v in raw_data.items()
+        if k in params.sections or k in ("model_name", "table_name", "file_path")
+    }
 
 
 def _filter_sections(data: dict[str, Any], sections: list[str] | None) -> str:
