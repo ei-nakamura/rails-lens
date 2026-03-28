@@ -1,0 +1,8 @@
+{
+  "model_name": "User",
+  "routes": [
+    {"verb": "POST", "path": "/users", "controller": "users", "action": "create"}
+  ],
+  "callbacks": ["before_save :normalize_email"],
+  "nested_attributes": []
+}

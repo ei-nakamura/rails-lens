@@ -529,3 +529,115 @@ class ExtractConcernOutput(BaseModel):
     candidates: list[ConcernCandidate] = Field(default_factory=list)
     unclustered_methods: list[str] = Field(default_factory=list)
     summary: str = ""
+
+
+# ============================================================
+# Phase 8: Data Flow
+# ============================================================
+
+class DataFlowInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    controller_action: str | None = Field(
+        None,
+        description="Controller#action (e.g., 'UsersController#create')",
+    )
+    model_name: str | None = Field(
+        None,
+        description="Model name (alternative to controller_action)",
+    )
+    attribute: str | None = Field(
+        None,
+        description="Attribute to trace (optional, traces all if omitted)",
+    )
+
+
+class RouteInfo(BaseModel):
+    verb: str
+    path: str
+    controller: str
+    action: str
+
+
+class StrongParamsInfo(BaseModel):
+    file: str
+    line: int
+    permitted_params: list[str]
+    nested_params: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class CallbackTransform(BaseModel):
+    kind: str              # "before_save", "before_validation", etc.
+    method_name: str
+    file: str
+    line: int
+    description: str
+
+
+class DataFlowStep(BaseModel):
+    order: int
+    # "routing", "strong_params", "assignment", "callback", "nested_propagation"
+    layer: str
+    description: str
+    file: str | None = None
+    line: int | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class DataFlowOutput(BaseModel):
+    entry_point: str
+    attribute: str | None = None
+    route: RouteInfo | None = None
+    strong_params: StrongParamsInfo | None = None
+    callbacks: list[CallbackTransform] = Field(default_factory=list)
+    flow_steps: list[DataFlowStep] = Field(default_factory=list)
+    mermaid_diagram: str = ""
+
+
+# ============================================================
+# Phase 8: Migration Context
+# ============================================================
+
+class MigrationContextInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    table_name: str = Field(
+        ...,
+        description="Table name (e.g., 'users')",
+        min_length=1,
+    )
+    operation: str = Field(
+        "general",
+        description=(
+            "Planned operation type "
+            "(add_column, remove_column, add_index, change_column, add_reference, general)"
+        ),
+    )
+
+
+class MigrationHistoryItem(BaseModel):
+    version: str           # "20260315120000"
+    name: str              # "AddPhoneToUsers"
+    file: str              # "db/migrate/20260315120000_add_phone_to_users.rb"
+    operation_summary: str # "add_column :users, :phone, :string"
+
+
+class MigrationWarning(BaseModel):
+    type: str              # "large_table", "missing_index", "null_constraint", "foreign_key"
+    message: str
+    suggestion: str
+
+
+class MigrationTemplate(BaseModel):
+    description: str
+    code: str              # マイグレーションファイルのテンプレート
+
+
+class MigrationContextOutput(BaseModel):
+    table_name: str
+    operation: str
+    schema: SchemaInfo = Field(default_factory=SchemaInfo)  # type: ignore[assignment]
+    migration_history: list[MigrationHistoryItem] = Field(default_factory=list)
+    warnings: list[MigrationWarning] = Field(default_factory=list)
+    template: MigrationTemplate | None = None
+    related_models: list[str] = Field(default_factory=list)
+    estimated_row_count: int | None = None
+    summary: str = ""

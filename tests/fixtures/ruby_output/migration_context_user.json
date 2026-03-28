@@ -1,0 +1,9 @@
+{
+  "model_name": "User",
+  "table_name": "users",
+  "columns": [{"name": "email", "type": "string", "null": false}],
+  "indexes": [{"name": "index_users_on_email", "columns": ["email"], "unique": true}],
+  "foreign_keys": [],
+  "estimated_row_count": 1500,
+  "migration_history": [{"version": "20240101000000", "name": "CreateUsers", "applied_at": "2024-01-01"}]
+}

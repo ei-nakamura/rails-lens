@@ -9,6 +9,7 @@ from rails_lens.tools.analyze_concern import register as register_analyze_concer
 from rails_lens.tools.circular_dependencies import (
     register as register_circular_dependencies,
 )
+from rails_lens.tools.data_flow import register as register_data_flow
 from rails_lens.tools.dead_code import register as register_dead_code
 from rails_lens.tools.dependency_graph import register as register_dep_graph
 from rails_lens.tools.explain_method_resolution import (
@@ -24,6 +25,7 @@ from rails_lens.tools.get_schema import register as register_get_schema
 from rails_lens.tools.impact_analysis import register as register_impact_analysis
 from rails_lens.tools.introspect_model import register as register_introspect
 from rails_lens.tools.list_models import register as register_list_models
+from rails_lens.tools.migration_context import register as register_migration_context
 from rails_lens.tools.refresh_cache import register as register_refresh_cache
 from rails_lens.tools.test_mapping import register as register_test_mapping
 from rails_lens.tools.trace_callback_chain import register as register_trace
@@ -75,6 +77,8 @@ register_test_mapping(mcp, _ensure_initialized)
 register_dead_code(mcp, _ensure_initialized)
 register_circular_dependencies(mcp, _ensure_initialized)
 register_extract_concern_candidate(mcp, _ensure_initialized)
+register_data_flow(mcp, _ensure_initialized)
+register_migration_context(mcp, _ensure_initialized)
 
 
 def main() -> None:
