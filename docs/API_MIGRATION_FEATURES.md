@@ -19,6 +19,7 @@
    - [F-2. rails_lens_api_audit](#f-2-rails_lens_api_audit)
    - [F-3. rails_lens_n_plus_one_detector](#f-3-rails_lens_n_plus_one_detector)
    - [F-4. rails_lens_exposure_check](#f-4-rails_lens_exposure_check)
+   - [F-5. rails_lens_redundancy_detector](#f-5-rails_lens_redundancy_detector)
 4. [カテゴリG: 既存コードとAPI層の橋渡し](#4-カテゴリg-既存コードとapi層の橋渡し)
    - [G-1. rails_lens_endpoint_inventory](#g-1-rails_lens_endpoint_inventory)
    - [G-2. rails_lens_before_action_chain](#g-2-rails_lens_before_action_chain)
@@ -85,6 +86,7 @@ rails-lens が既に持つ解析能力（ルーティング、モデル構造、
 | F-2 | `rails_lens_api_audit` | 品質管理 | ランタイム + 静的解析 | M |
 | F-3 | `rails_lens_n_plus_one_detector` | 品質管理 | 静的解析 | M |
 | F-4 | `rails_lens_exposure_check` | 品質管理 | ランタイム + 静的解析 | S |
+| F-5 | `rails_lens_redundancy_detector` | 品質管理 | 静的解析 + ハイブリッド | L |
 | G-1 | `rails_lens_endpoint_inventory` | 橋渡し | ランタイム + 静的解析 | M |
 | G-2 | `rails_lens_before_action_chain` | 橋渡し | ランタイム | M |
 | G-3 | `rails_lens_view_model_coupling` | 橋渡し | 静的解析 | M |
@@ -1436,6 +1438,329 @@ class ExposureCheckOutput(BaseModel):
 - 機密属性のブラックリストとパターンマッチは単純
 - `render` パターンの静的検出も正規表現で実装可能
 - 新規ランタイム解析は不要
+
+---
+
+### F-5. rails_lens_redundancy_detector
+
+#### 解決する課題と利用シーン
+
+**課題**: Web画面では許容されていたレイテンシが、API化すると直接レスポンスタイムに影響する。その原因の多くは「同じデータを複数回取得している」冗長な呼び出し。特にコールバック連鎖やメソッド分割によって見えにくくなった重複は、コードレビューでも見落とされやすい。
+
+**利用シーン**:
+- API化前のパフォーマンス監査として、主要エンドポイントの冗長な呼び出しを事前に洗い出す
+- AIがエンドポイントを実装・リファクタリングした後、処理フロー上の重複がないかを自動検出する
+- コールバック連鎖が深いモデルで、どのフェーズにコストが集中しているかを可視化する
+
+**N+1 detector（F-3）との関係**: N+1 detector は「ループ内でのeager load欠如」を検出する。redundancy detector は「処理フロー上での同一リソースへの冗長な呼び出し」を検出する。前者はコレクション操作、後者は単一リクエストの処理パイプライン全体が対象であり、相互に補完する関係にある。
+
+#### 検出対象
+
+##### 1. DBクエリの重複
+
+- 同一メソッド内（およびそこから呼ばれるプライベートメソッド群）で、同じモデルに対する `find` / `find_by` / `where` が複数回出現
+- コールバックチェーンの中で同じモデルの `reload` が複数回発行される
+- `current_user` やその関連を何度も辿っている（`current_user.company.plan` が3箇所に散らばる等）
+
+##### 2. 外部APIコールの重複
+
+- 同一リクエスト処理内で、同じ外部サービスクライアントのメソッドが複数回呼ばれる
+- コールバック経由で間接的に呼ばれるケースも追跡する（例: `before_save` で税率API、`after_save` でもう一度税率APIを呼んでいる）
+
+##### 3. 関連オブジェクトの再取得
+
+- `belongs_to` で取得済みの関連オブジェクトを、別の箇所で再度 `find` している
+- `user.orders.count` を複数箇所で呼んでいる（カウンタキャッシュがない場合、毎回 COUNT クエリが走る）
+
+#### ツール仕様
+
+##### 入力スキーマ
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "target": {
+      "type": "string",
+      "description": "モード1用: 解析対象メソッド（例: 'Api::V1::OrdersController#create'）"
+    },
+    "depth": {
+      "type": "string",
+      "description": "モード1用: 解析深度",
+      "enum": ["shallow", "deep"],
+      "default": "deep"
+    },
+    "controller_action": {
+      "type": "string",
+      "description": "モード2用: エンドポイント全体のコスト推定対象（例: 'Api::V1::OrdersController#create'）"
+    },
+    "include_callbacks": {
+      "type": "boolean",
+      "description": "モード2用: コールバック連鎖内の呼び出しも含める",
+      "default": true
+    },
+    "include_async": {
+      "type": "boolean",
+      "description": "モード2用: ActiveJob経由の非同期呼び出しも含める",
+      "default": false
+    }
+  }
+}
+```
+
+##### Pydanticモデル定義
+
+```python
+class RedundancyDetectorInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    # モード1: メソッド単位の重複検出
+    target: str | None = Field(
+        None,
+        description="Method to analyze (e.g., 'Api::V1::OrdersController#create')",
+    )
+    depth: str = Field(
+        "deep",
+        description="Analysis depth: 'shallow' (target method only) or 'deep' (callees + callbacks)",
+    )
+    # モード2: エンドポイント全体のコスト推定
+    controller_action: str | None = Field(
+        None,
+        description="Controller action for endpoint cost estimation",
+    )
+    include_callbacks: bool = Field(
+        True,
+        description="Include calls within callback chains",
+    )
+    include_async: bool = Field(
+        False,
+        description="Include async calls via ActiveJob (excluded by default as they don't affect response time)",
+    )
+
+
+class RedundancyLocation(BaseModel):
+    file: str                           # "app/controllers/api/v1/orders_controller.rb"
+    line: int                           # 12
+    context: str                        # "set_order → current_user.orders.find"
+    phase: str                          # "before_action", "validation", "after_save callback" 等
+
+
+class RedundancyIssue(BaseModel):
+    type: str                           # "db_query", "external_api", "association_reload"
+    pattern: str                        # "User.find(user_id)"
+    occurrences: int                    # 3
+    locations: list[RedundancyLocation]
+    impact: str                         # "3 SELECTs → 1 SELECT に削減可能"
+    suggestion: str                     # 具体的なリファクタリング手法
+
+
+class ExternalCallInfo(BaseModel):
+    service: str                        # "TaxCalculator (external API)"
+    via: str                            # "Taxable#apply_tax"
+    phase: str                          # "before_save callback"
+    sync: bool                          # True
+    note: str                           # "同期的に外部APIを呼んでいるため、レスポンスタイムに直接影響する"
+
+
+class PhaseCost(BaseModel):
+    db_queries: int = 0
+    external_calls: int = 0
+
+
+class EndpointCostSummary(BaseModel):
+    total_db_queries_estimated: int = 0
+    unique_db_queries: int = 0
+    redundant_db_queries: int = 0
+    external_api_calls: int = 0
+    mailer_enqueues: int = 0
+    async_job_enqueues: int = 0
+
+
+class RedundancyDetectorOutput(BaseModel):
+    endpoint: str                       # "POST /api/v1/orders"
+    mode: str                           # "method_scan" or "endpoint_cost"
+    summary: EndpointCostSummary
+    redundancies: list[RedundancyIssue] = Field(default_factory=list)
+    external_calls: list[ExternalCallInfo] = Field(default_factory=list)
+    cost_breakdown_by_phase: dict[str, PhaseCost] = Field(default_factory=dict)
+    analysis_metadata: str = ""         # 解析の前提条件や制約の説明
+```
+
+##### 2つのモード
+
+###### モード1: メソッド単位の重複検出（静的解析）
+
+指定したメソッドとそこから呼ばれるメソッド群を静的に走査し、同一パターンの呼び出しが複数回出現する箇所を検出する。
+
+入力例:
+
+```
+target: "Api::V1::OrdersController#create"
+depth: "deep"          # "shallow"（対象メソッドのみ）or "deep"（呼び出し先 + コールバックも追跡）
+```
+
+###### モード2: エンドポイント全体のコスト推定（ハイブリッド）
+
+`rails_lens_trace_callback_chain` と `rails_lens_data_flow`（既存ツール）の結果を組み合わせて、1つのエンドポイントが処理される間に発生する「外部とのやりとり」の総量と冗長性を推定する。
+
+入力例:
+
+```
+controller_action: "Api::V1::OrdersController#create"
+include_callbacks: true     # コールバック連鎖内の呼び出しも含める
+include_async: false        # ActiveJob経由の非同期呼び出しは除外する（レスポンスタイムに影響しない）
+```
+
+##### 出力例
+
+```json
+{
+  "endpoint": "POST /api/v1/orders",
+  "mode": "endpoint_cost",
+  "summary": {
+    "total_db_queries_estimated": 8,
+    "unique_db_queries": 5,
+    "redundant_db_queries": 3,
+    "external_api_calls": 2,
+    "mailer_enqueues": 1,
+    "async_job_enqueues": 2
+  },
+  "redundancies": [
+    {
+      "type": "db_query",
+      "pattern": "User.find(user_id)",
+      "occurrences": 3,
+      "locations": [
+        {
+          "file": "app/controllers/api/v1/orders_controller.rb",
+          "line": 12,
+          "context": "set_order → current_user.orders.find",
+          "phase": "before_action"
+        },
+        {
+          "file": "app/models/order.rb",
+          "line": 60,
+          "context": "validate_items_availability → self.user",
+          "phase": "validation"
+        },
+        {
+          "file": "app/models/concerns/auditable.rb",
+          "line": 18,
+          "context": "record_audit_event → Current.user",
+          "phase": "after_save callback"
+        }
+      ],
+      "impact": "3 SELECTs → 1 SELECT に削減可能",
+      "suggestion": "コントローラで取得した user インスタンスをモデル側でも再利用する。Current.user パターンの導入、または引数での受け渡しを検討。"
+    },
+    {
+      "type": "db_query",
+      "pattern": "user.orders.count",
+      "occurrences": 2,
+      "locations": [
+        {
+          "file": "app/models/user.rb",
+          "line": 70,
+          "context": "validate_company_membership → company.users.count",
+          "phase": "validation"
+        },
+        {
+          "file": "app/models/order.rb",
+          "line": 40,
+          "context": "update_user_stats → user.orders.count",
+          "phase": "after_save callback"
+        }
+      ],
+      "impact": "毎回 COUNT クエリが走る。カウンタキャッシュの導入で 0 クエリに削減可能",
+      "suggestion": "Company に users_count、User に orders_count のカウンタキャッシュカラムを追加する。"
+    }
+  ],
+  "external_calls": [
+    {
+      "service": "TaxCalculator (external API)",
+      "via": "Taxable#apply_tax",
+      "phase": "before_save callback",
+      "sync": true,
+      "note": "同期的に外部APIを呼んでいるため、レスポンスタイムに直接影響する"
+    },
+    {
+      "service": "WarehouseAPI",
+      "via": "Fulfillable#notify_warehouse",
+      "phase": "after_commit callback",
+      "sync": false,
+      "note": "ActiveJob 経由（非同期）。レスポンスタイムには影響しない"
+    }
+  ],
+  "cost_breakdown_by_phase": {
+    "before_action": { "db_queries": 1, "external_calls": 0 },
+    "validation": { "db_queries": 2, "external_calls": 0 },
+    "before_save_callbacks": { "db_queries": 0, "external_calls": 1 },
+    "save (INSERT/UPDATE)": { "db_queries": 1, "external_calls": 0 },
+    "after_save_callbacks": { "db_queries": 2, "external_calls": 0 },
+    "after_commit_callbacks": { "db_queries": 0, "external_calls": 1 }
+  }
+}
+```
+
+#### 実装方針: 静的解析 + ハイブリッド
+
+**Rubyスクリプト**: 新規追加不要。既存ツールの結果の「二次解析」として Python 側で完結する。
+
+**Python側**:
+- `tools/redundancy_detector.py` — ツール定義
+- `analyzers/redundancy_analyzer.py` — 冗長性検出ロジック（モード1・モード2 共通）
+
+**処理フロー（モード1: メソッド単位）**:
+
+```
+1. target から対象メソッドのソースファイルを特定（find_references の grep 基盤を内部的に再利用）
+2. 対象メソッドのソースコードを読み取り、メソッド呼び出しパターンを抽出
+3. depth: "deep" の場合、呼び出し先メソッドを再帰的に展開:
+   a. プライベートメソッド → 同一ファイル内で定義を検索
+   b. 他モデルのメソッド → find_references でファイルを特定し展開
+4. 抽出した全呼び出しパターンを集約し、同一パターンの重複を検出
+5. 重複パターンごとに impact と suggestion を生成
+```
+
+**処理フロー（モード2: エンドポイント全体）**:
+
+```
+1. controller_action から get_routes キャッシュでエンドポイント情報を取得
+2. 以下の既存ツールの出力をキャッシュから取得して統合:
+   a. trace_callback_chain → コールバック一覧と実行順序
+   b. introspect_model → 関連モデル情報（どの association 経由で何が呼ばれるか）
+   c. data_flow → コントローラからモデルへのデータ経路
+   d. before_action_chain → コントローラのフィルタチェーン
+3. 各フェーズ（before_action → validation → callbacks → save → after_callbacks）で
+   発生する呼び出しを整理し、フェーズごとのコストを算出
+4. フェーズ間での重複パターンを検出（異なるフェーズで同じリソースにアクセス）
+5. include_async: false の場合、ActiveJob 経由の呼び出しを除外
+6. cost_breakdown_by_phase を生成し、コスト集中フェーズを可視化
+```
+
+#### 既存ツールとの連携
+
+| 既存ツール | 連携方法 |
+|---|---|
+| `n_plus_one_detector` (F-3) | 補完関係。N+1 は「ループ内の重複」、redundancy は「処理フロー上の重複」 |
+| `trace_callback_chain` | 入力として使用。コールバック内の呼び出しを追跡するため |
+| `data_flow` | 入力として使用。同じパラメータがどこで再取得されるかを追跡 |
+| `introspect_model` | 入力として使用。関連モデル情報の取得と association 経由のアクセスパス解析 |
+| `before_action_chain` | 入力として使用。コントローラのフィルタチェーン内の呼び出しを把握 |
+| `find_references` | メソッド定義の検索と呼び出し先メソッドのソースコード取得に使用 |
+| `impact_analysis` (A-1) | 補完関係。redundancy 検出結果は「ここを共通化すれば影響箇所が減る」提案に活用可能 |
+
+#### 設計上の注意点
+
+- 非同期ジョブ（ActiveJob）経由の呼び出しはデフォルトで除外する。レスポンスタイムに影響しないため。`include_async: true` で含められるオプションは用意する
+- 「冗長」の判定は保守的に行う。条件分岐の異なるブランチで同じクエリが呼ばれている場合、実行時には片方しか通らない可能性があるため、警告レベルを下げる
+- `cost_breakdown_by_phase` は Rails のリクエスト処理フェーズ（before_action → validation → callbacks → save → after_callbacks → response）に沿って分解する。どのフェーズにコストが集中しているかを一目で把握できるようにする
+- 出力の `suggestion` は具体的なリファクタリング手法を提案する（カウンタキャッシュ、Current パターン、メモ化、eager loading 等）
+
+#### 難易度と工数: L（大）
+
+- 既存ツールの結果を統合する必要があるため、個々の解析は軽いがオーケストレーションが複雑
+- メソッド呼び出しの再帰的展開（モード1 deep）は、呼び出しグラフの構築が必要
+- モード2 は4つの既存ツールの出力を正確に組み合わせる統合ロジックが必要
 
 ---
 
