@@ -10,7 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from rails_lens.bridge.runner import RailsBridge
 from rails_lens.cache.manager import CacheManager
 from rails_lens.config import RailsLensConfig
-from rails_lens.errors import RailsLensError
+from rails_lens.errors import RailsLensError, RailsRunnerExecutionError
 from rails_lens.models import DataFlowInput
 from rails_lens.tools import data_flow as data_flow_module
 
@@ -104,3 +104,51 @@ async def test_data_flow_bridge_error(
     assert "code" in parsed
     assert "message" in parsed
     assert "bridge failed" in parsed["message"]
+
+
+@pytest.mark.asyncio
+async def test_data_flow_fallback(
+    config: RailsLensConfig,
+    mock_bridge: RailsBridge,
+    cache_manager: CacheManager,
+) -> None:
+    """RailsRunnerExecutionError 時にファイルベースフォールバックを返す"""
+    # routes.rb を作成
+    routes_rb = config.rails_project_path / "config" / "routes.rb"
+    routes_rb.write_text(
+        "Rails.application.routes.draw do\n"
+        "  post '/users', to: 'users#create'\n"
+        "end\n"
+    )
+    # controller を作成
+    controllers_dir = config.rails_project_path / "app" / "controllers"
+    controllers_dir.mkdir(parents=True, exist_ok=True)
+    (controllers_dir / "users_controller.rb").write_text(
+        "class UsersController < ApplicationController\n"
+        "  def create\n"
+        "    @user = User.new(user_params)\n"
+        "    @user.save\n"
+        "  end\n"
+        "  def index\n"
+        "    @users = User.all\n"
+        "  end\n"
+        "end\n"
+    )
+
+    mcp = FastMCP("test")
+    mock_bridge.execute = AsyncMock(side_effect=RailsRunnerExecutionError("runner failed"))
+    get_deps = _make_get_deps(config, mock_bridge, cache_manager)
+    data_flow_module.register(mcp, get_deps)
+    fn = mcp._tool_manager._tools["rails_lens_data_flow"].fn
+
+    params = DataFlowInput(model_name="User")
+    result = await fn(params)
+    parsed = json.loads(result)
+
+    assert parsed["_metadata"]["source"] == "file_analysis"
+    assert parsed["entry_point"] == "User"
+    assert "sequenceDiagram" in parsed["mermaid_diagram"]
+    assert parsed["route"]["verb"] == "POST"
+    assert parsed["route"]["path"] == "/users"
+    assert "User" in parsed["_metadata"]["model_refs_found"]
+    assert "create" in parsed["_metadata"]["actions_found"]

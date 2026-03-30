@@ -11,7 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from rails_lens.bridge.runner import RailsBridge
 from rails_lens.cache.manager import CacheManager
 from rails_lens.config import RailsLensConfig
-from rails_lens.errors import RailsLensError
+from rails_lens.errors import RailsLensError, RailsRunnerExecutionError
 from rails_lens.models import MethodResolutionInput
 from rails_lens.tools import explain_method_resolution as method_module
 
@@ -93,3 +93,42 @@ async def test_method_resolution_bridge_error(
     assert "code" in parsed
     assert "message" in parsed
     assert "bridge failed" in parsed["message"]
+
+
+@pytest.mark.asyncio
+async def test_method_resolution_fallback(
+    config: RailsLensConfig,
+    mock_bridge: RailsBridge,
+    cache_manager: CacheManager,
+) -> None:
+    """RailsRunnerExecutionError 時にファイルベースフォールバックを返す"""
+    # user.rb に include/extend/prepend を追加
+    user_rb = config.rails_project_path / "app" / "models" / "user.rb"
+    user_rb.write_text(
+        "class User < ApplicationRecord\n"
+        "  prepend Overridable\n"
+        "  include Devise::Authenticatable\n"
+        "  extend ClassMethods\n"
+        "end\n"
+    )
+
+    mcp = FastMCP("test")
+    mock_bridge.execute = AsyncMock(side_effect=RailsRunnerExecutionError("runner failed"))
+    get_deps = _make_get_deps(config, mock_bridge, cache_manager)
+    method_module.register(mcp, get_deps)
+    fn = mcp._tool_manager._tools["rails_lens_explain_method_resolution"].fn
+
+    params = MethodResolutionInput(model_name="User")
+    result = await fn(params)
+    parsed = json.loads(result)
+
+    assert parsed["_metadata"]["source"] == "file_analysis"
+    assert parsed["model_name"] == "User"
+    ancestor_names = [a["name"] for a in parsed["ancestors"]]
+    assert "Overridable" in ancestor_names
+    assert "Devise::Authenticatable" in ancestor_names
+    assert "ClassMethods" in ancestor_names
+    assert "User" in ancestor_names
+    assert "ApplicationRecord" in ancestor_names
+    # prepend: Overridable は User より前に来る
+    assert ancestor_names.index("Overridable") < ancestor_names.index("User")

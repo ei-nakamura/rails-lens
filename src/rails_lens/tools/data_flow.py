@@ -1,13 +1,16 @@
 """rails_lens_data_flow ツール"""
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from rails_lens.errors import RailsRunnerExecutionError, RailsRunnerTimeoutError
 from rails_lens.models import (
     CallbackTransform,
     DataFlowInput,
@@ -91,6 +94,132 @@ def _generate_mermaid_sequence(output: DataFlowOutput) -> str:
     lines.append("    Model->>DB: SQL query")
 
     return "\n".join(lines)
+
+
+def _controller_name_to_snake(name: str) -> str:
+    """Convert controller name to snake_case path.
+
+    'UsersController' -> 'users_controller'
+    'Admin::UsersController' -> 'admin/users_controller'
+    """
+    parts = name.split("::")
+    snake_parts = []
+    for part in parts:
+        s1 = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', part)
+        snake_parts.append(re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', s1).lower())
+    return "/".join(snake_parts)
+
+
+def _fallback_data_flow(config: Any, params: DataFlowInput) -> dict[str, Any]:
+    """Rails runner不使用時: routes.rb解析 + controllerファイルのアクション抽出 + モデル参照検出"""
+    project_path = config.rails_project_path
+    identifier = params.controller_action or params.model_name or ""
+
+    # 1. routes.rb からルート→コントローラ対応を抽出
+    route: RouteInfo | None = None
+    routes_file = project_path / "config" / "routes.rb"
+    if routes_file.exists():
+        try:
+            content = routes_file.read_text(encoding="utf-8", errors="replace")
+            for m in re.finditer(
+                r'(get|post|put|patch|delete)\s+[\'"]([^\'"]+)[\'"]'
+                r'.*?to:\s*[\'"](\w+)#(\w+)[\'"]',
+                content,
+                re.IGNORECASE,
+            ):
+                verb = m.group(1).upper()
+                path = m.group(2)
+                controller = m.group(3)
+                action = m.group(4)
+                if not route:
+                    route = RouteInfo(verb=verb, path=path, controller=controller, action=action)
+                    break
+        except OSError:
+            pass
+
+    # 2. app/controllers/ 配下のコントローラファイルのアクションメソッドを抽出
+    actions_found: list[str] = []
+    model_refs_found: list[str] = []
+    controllers_dir = project_path / "app" / "controllers"
+    ctrl_files: list[Path] = []
+
+    if controllers_dir.exists():
+        if params.controller_action and "#" in params.controller_action:
+            ctrl_name = params.controller_action.split("#")[0]
+            snake = _controller_name_to_snake(ctrl_name)
+            f = controllers_dir / f"{snake}.rb"
+            if f.exists():
+                ctrl_files = [f]
+
+        if not ctrl_files and params.model_name:
+            model_snake = _controller_name_to_snake(params.model_name)
+            for suffix in [f"{model_snake}s_controller.rb", f"{model_snake}_controller.rb"]:
+                f = controllers_dir / suffix
+                if f.exists():
+                    ctrl_files = [f]
+                    break
+
+        if not ctrl_files:
+            ctrl_files = list(controllers_dir.rglob("*_controller.rb"))[:3]
+
+        for ctrl_file in ctrl_files[:2]:
+            try:
+                ctrl_content = ctrl_file.read_text(encoding="utf-8", errors="replace")
+                for m in re.finditer(r'^\s*def\s+(\w+)', ctrl_content, re.MULTILINE):
+                    actions_found.append(m.group(1))
+                for m in re.finditer(
+                    r'\b([A-Z][A-Za-z]+)\.(find|where|new|create|all|first|last)\b',
+                    ctrl_content,
+                ):
+                    model_refs_found.append(m.group(1))
+            except OSError:
+                pass
+
+    # 3. DataFlowOutput 構築
+    flow_steps: list[DataFlowStep] = []
+    step_order = 1
+    if route:
+        flow_steps.append(DataFlowStep(
+            order=step_order,
+            layer="routing",
+            description=f"{route.verb} {route.path} → {route.controller}#{route.action}",
+            details={"verb": route.verb, "path": route.path},
+        ))
+        step_order += 1
+    flow_steps.append(DataFlowStep(
+        order=step_order,
+        layer="assignment",
+        description="Model.new(params) — attribute assignment (file analysis)",
+    ))
+    step_order += 1
+    flow_steps.append(DataFlowStep(
+        order=step_order,
+        layer="db",
+        description="SQL INSERT/UPDATE via ActiveRecord",
+    ))
+
+    output = DataFlowOutput(
+        entry_point=identifier,
+        attribute=params.attribute,
+        route=route,
+        strong_params=None,
+        callbacks=[],
+        flow_steps=flow_steps,
+        mermaid_diagram="",
+    )
+    output.mermaid_diagram = _generate_mermaid_sequence(output)
+
+    result = output.model_dump()
+    result["_metadata"] = {
+        "source": "file_analysis",
+        "note": (
+            "Full data flow requires Rails runner. "
+            "routes.rb + controllers analyzed statically."
+        ),
+        "actions_found": list(dict.fromkeys(actions_found))[:10],
+        "model_refs_found": list(dict.fromkeys(model_refs_found))[:10],
+    }
+    return result
 
 
 async def data_flow_impl(
@@ -224,6 +353,9 @@ def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
                 "data_flow.rb",
                 args=[identifier, ""],
             )
+        except (RailsRunnerExecutionError, RailsRunnerTimeoutError, FileNotFoundError, OSError):
+            fallback = _fallback_data_flow(config, params)
+            return json.dumps(fallback, ensure_ascii=False, indent=2)
         except Exception as e:
             return ErrorResponse(
                 code="RUNTIME_ANALYSIS_ERROR", message=str(e)
