@@ -37,6 +37,30 @@ concerns, and dynamic method generation.
 - Trace data flow from HTTP request to database
 - Provide migration context and safety warnings
 
+## Requirements
+
+**Required:**
+- Python >= 3.11
+
+**Optional (for full functionality):**
+- Ruby + Bundler — enables Rails runner for live introspection
+  (e.g., accurate association traversal, runtime method resolution)
+- ripgrep (`rg`) — used by search-based tools (find_references, etc.)
+
+**Without Ruby:**
+rails-lens works with file-based analysis fallback. Most tools return useful
+results by parsing Ruby files directly. Results include
+`_metadata.source: "file_analysis"` to indicate fallback mode.
+Some tools return limited data compared to Rails runner mode.
+
+| Feature | With Ruby | Without Ruby |
+|---------|-----------|-------------|
+| Model listing | Live ActiveRecord scan | File glob + regex |
+| Schema info | DB introspection | db/schema.rb parse |
+| Associations | Runtime evaluation | Regex extraction |
+| Method resolution | Full ancestor chain | include/extend/prepend inference |
+| Gem introspection | Runtime method injection | Gemfile/Gemfile.lock parse only |
+
 ## Installation
 
 ```bash

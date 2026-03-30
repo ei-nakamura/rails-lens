@@ -35,6 +35,30 @@ rails-lensは、RubyonRailsアプリケーションの構造を抽出し、Claud
 - HTTPリクエストからDBまでのデータフローを追跡
 - マイグレーションコンテキストと安全性警告を提供
 
+## 必要環境
+
+**必須:**
+- Python >= 3.11
+
+**推奨（フル機能利用時）:**
+- Ruby + Bundler — Rails runnerによるライブイントロスペクションに必要
+  （正確なassociation探索・ランタイムメソッド解決等）
+- ripgrep (`rg`) — 検索系ツール（find_references等）で使用
+
+**Rubyなしの場合:**
+rails-lensはファイル解析フォールバックで動作します。ほとんどのツールは
+Rubyファイルを直接パースして有用な結果を返します。フォールバック時の結果には
+`_metadata.source: "file_analysis"` が付与されます。
+一部ツールはRails runnerモードと比べて取得できる情報が限定されます。
+
+| 機能 | Rubyあり | Rubyなし |
+|------|---------|---------|
+| モデル一覧 | ActiveRecordライブスキャン | ファイルglob + 正規表現 |
+| スキーマ情報 | DB introspection | db/schema.rbパース |
+| アソシエーション | ランタイム評価 | 正規表現抽出 |
+| メソッド解決 | 完全なancestorチェーン | include/extend/prepend推定 |
+| Gem情報 | ランタイムメソッド注入 | Gemfile/Gemfile.lockパースのみ |
+
 ## インストール
 
 ```bash
