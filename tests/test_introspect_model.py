@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -10,7 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from rails_lens.bridge.runner import RailsBridge
 from rails_lens.cache.manager import CacheManager
 from rails_lens.config import RailsLensConfig
-from rails_lens.errors import RailsRunnerTimeoutError
+from rails_lens.errors import ModelNotFoundError, RailsRunnerExecutionError, RailsRunnerTimeoutError
 from rails_lens.models import IntrospectModelInput
 from rails_lens.tools import introspect_model as introspect_module
 
@@ -103,13 +104,50 @@ async def test_introspect_section_filter(
 async def test_introspect_bridge_error(
     mcp_and_tool,
 ) -> None:
-    """bridge 例外時の ErrorResponse 返却"""
+    """ModelNotFoundError など非Runner例外時の ErrorResponse 返却"""
     _mcp, tool_fn, bridge, _cache = mcp_and_tool
-    bridge.execute = AsyncMock(side_effect=RailsRunnerTimeoutError("timeout"))
+    bridge.execute = AsyncMock(side_effect=ModelNotFoundError("User not found"))
 
     params = IntrospectModelInput(model_name="User")
     result = await tool_fn(params)
 
     parsed = json.loads(result)
     assert "code" in parsed
-    assert parsed["code"] == "RUNNER_TIMEOUT"
+    assert parsed["code"] == "MODEL_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_introspect_fallback_on_runner_error(
+    config: RailsLensConfig,
+    mock_bridge: RailsBridge,
+    cache_manager: CacheManager,
+    sample_rails_app: Path,
+) -> None:
+    """bridge が RailsRunnerExecutionError を返したときファイルベースフォールバックを使う"""
+    model_file = sample_rails_app / "app" / "models" / "user.rb"
+    model_file.write_text(
+        "class User < ApplicationRecord\n"
+        "  has_many :posts\n"
+        "  belongs_to :organization\n"
+        "  validates :email, presence: true\n"
+        "  before_save :normalize_email\n"
+        "  scope :active, -> { where(active: true) }\n"
+        "end\n"
+    )
+    mock_bridge.execute = AsyncMock(side_effect=RailsRunnerExecutionError("runner failed"))
+
+    mcp = FastMCP("test")
+    get_deps = _make_get_deps(config, mock_bridge, cache_manager)
+    introspect_module.register(mcp, get_deps)
+    tool_fn = mcp._tool_manager._tools["rails_lens_introspect_model"].fn
+
+    params = IntrospectModelInput(model_name="User")
+    result = await tool_fn(params)
+    parsed = json.loads(result)
+
+    assert parsed["_metadata"]["source"] == "file_analysis"
+    assert len(parsed["associations"]) == 2
+    assert any(a["name"] == "posts" for a in parsed["associations"])
+    assert len(parsed["validations"]) == 1
+    assert len(parsed["callbacks"]) == 1
+    assert len(parsed["scopes"]) == 1
