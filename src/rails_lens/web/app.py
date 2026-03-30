@@ -1,6 +1,7 @@
 """rails-lens Web ダッシュボード アプリケーションファクトリ"""
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -51,3 +52,19 @@ def create_app(bridge: Any, cache: Any, config: Any) -> FastAPI:
     app.include_router(gems.router)
 
     return app
+
+
+def _build_default_app() -> FastAPI:
+    """uvicorn から直接起動するためのデフォルトアプリを生成する"""
+    from rails_lens.bridge.runner import RailsBridge
+    from rails_lens.cache.manager import CacheManager
+    from rails_lens.config import load_config
+
+    config = load_config()
+    bridge = RailsBridge(config)
+    cache = CacheManager(config)
+    return create_app(bridge, cache, config)
+
+
+with contextlib.suppress(Exception):
+    app = _build_default_app()
