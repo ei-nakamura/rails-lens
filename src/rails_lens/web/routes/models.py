@@ -17,9 +17,10 @@ _CALLBACK_EVENTS = ["before_save", "after_save", "before_create", "after_create"
 @router.get("/models", response_class=HTMLResponse)
 async def models_list(request: Request) -> HTMLResponse:
     bridge = request.app.state.bridge
+    config = request.app.state.config
     templates = request.app.state.templates
 
-    models_output = await list_models_impl(bridge)
+    models_output = await list_models_impl(bridge, config)
 
     return templates.TemplateResponse(request, "models.html", {  # type: ignore[no-any-return]
         "models": [m.model_dump() for m in models_output.models],
@@ -30,12 +31,14 @@ async def models_list(request: Request) -> HTMLResponse:
 async def model_detail(request: Request, model_name: str) -> HTMLResponse:
     bridge = request.app.state.bridge
     cache = request.app.state.cache
+    config = request.app.state.config
     templates = request.app.state.templates
 
     model_data = await introspect_model_impl(
         IntrospectModelInput(model_name=model_name, sections=None),
         bridge,
         cache,
+        config,
     )
 
     callback_chains: dict[str, object] = {}

@@ -78,6 +78,7 @@ async def introspect_model_impl(
     params: IntrospectModelInput,
     bridge: Any,
     cache: Any,
+    config: Any,
 ) -> dict[str, Any]:
     """MCPデコレータなしで同じロジックを実行し、dict を返す"""
     model_name = params.model_name
@@ -91,7 +92,12 @@ async def introspect_model_impl(
             if k in params.sections or k in ("model_name", "table_name", "file_path")
         }
 
-    raw_data = await bridge.execute("introspect_model.rb", args=[model_name])
+    try:
+        raw_data = await bridge.execute("introspect_model.rb", args=[model_name])
+    except (RailsRunnerExecutionError, RailsRunnerTimeoutError, FileNotFoundError, OSError):
+        raw_data = _fallback_file_analysis(config, params)
+        raw_data["_metadata"] = {"source": "file_analysis", "note": "Rails runner unavailable"}
+
     source_files = _extract_source_files(raw_data, model_name)
     cache.set("introspect_model", model_name, raw_data, source_files)
 

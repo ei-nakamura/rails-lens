@@ -47,9 +47,12 @@ def _fallback_list_models(config: Any) -> dict[str, Any]:
     }
 
 
-async def list_models_impl(bridge: Any) -> ListModelsOutput:
+async def list_models_impl(bridge: Any, config: Any) -> ListModelsOutput:
     """MCPデコレータなしで同じロジックを実行し、ListModelsOutput を返す"""
-    raw_data = await bridge.execute("list_models.rb", args=[])
+    try:
+        raw_data = await bridge.execute("list_models.rb", args=[])
+    except (RailsRunnerExecutionError, RailsRunnerTimeoutError, FileNotFoundError, OSError):
+        raw_data = _fallback_list_models(config)
     models = [
         ModelSummary(
             name=m.get("name", ""),

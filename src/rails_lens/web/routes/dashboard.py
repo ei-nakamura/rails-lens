@@ -16,7 +16,7 @@ async def dashboard_top(request: Request) -> HTMLResponse:
     config = request.app.state.config
     templates = request.app.state.templates
 
-    models_output = await list_models_impl(bridge)
+    models_output = await list_models_impl(bridge, config)
     cache_stats = cache.get_stats() if hasattr(cache, "get_stats") else {}
 
     return templates.TemplateResponse(request, "index.html", {  # type: ignore[no-any-return]

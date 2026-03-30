@@ -18,9 +18,10 @@ router = APIRouter()
 async def er_diagram(request: Request, focus: str | None = None) -> HTMLResponse:
     bridge = request.app.state.bridge
     cache = request.app.state.cache
+    config = request.app.state.config
     templates = request.app.state.templates
 
-    models_output = await list_models_impl(bridge)
+    models_output = await list_models_impl(bridge, config)
 
     all_models = []
     for m in models_output.models:
@@ -28,6 +29,7 @@ async def er_diagram(request: Request, focus: str | None = None) -> HTMLResponse
             IntrospectModelInput(model_name=m.name, sections=["associations", "columns"]),
             bridge,
             cache,
+            config,
         )
         all_models.append(model_data)
 
