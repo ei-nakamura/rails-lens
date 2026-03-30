@@ -42,6 +42,17 @@ def test_env_var_override(sample_rails_app: Path, monkeypatch: pytest.MonkeyPatc
     assert cfg.timeout == 60
 
 
+def test_infer_project_path_from_toml_location(
+    sample_rails_app: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`.rails-lens.toml` の親ディレクトリからプロジェクトパスを推定"""
+    monkeypatch.delenv("RAILS_LENS_PROJECT_PATH", raising=False)
+    toml_path = sample_rails_app / ".rails-lens.toml"
+    toml_path.write_text("[rails]\ntimeout = 10\n")
+    cfg = load_config(config_path=toml_path)
+    assert cfg.rails_project_path == sample_rails_app.resolve()
+
+
 def test_cache_path_property(sample_rails_app: Path) -> None:
     """cache_path が正しいパスを返す"""
     cfg = RailsLensConfig(rails_project_path=sample_rails_app)

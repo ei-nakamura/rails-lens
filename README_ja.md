@@ -570,6 +570,16 @@ FastAPI + Jinja2 + [PicoCSS](https://picocss.com/) + [Mermaid.js](https://mermai
 
 ## 設定
 
+### `RAILS_LENS_PROJECT_PATH`
+
+解析対象のRailsアプリケーションのルートディレクトリ（`Gemfile`、`app/`、`config/`、`db/` などを含むディレクトリ）の絶対パスです。
+
+以下の方法で設定できます（優先順位順）：
+
+1. **環境変数 `RAILS_LENS_PROJECT_PATH`** — MCPサーバーとして実行する場合（Claude Code / Cursor）に必要です。サーバープロセスはRailsプロジェクトディレクトリから起動されないためです。
+2. **`.rails-lens.toml` の `rails.project_path`** — 設定ファイルでの明示的なパス指定。
+3. **`.rails-lens.toml` の配置場所** — `.rails-lens.toml` をRailsプロジェクトのルートに配置すれば、ファイルの親ディレクトリからプロジェクトパスが自動推定されます。`project_path` の明示的な設定は不要です。
+
 ### Claude Code (`~/.claude/claude_desktop_config.json`)
 
 ```json
@@ -602,9 +612,11 @@ FastAPI + Jinja2 + [PicoCSS](https://picocss.com/) + [Mermaid.js](https://mermai
 
 ### `.rails-lens.toml`（任意、Railsプロジェクトのルートに配置）
 
+Railsプロジェクトのルートに配置する場合、`project_path` は省略可能です。ファイルの配置場所から自動的に解決されます。
+
 ```toml
 [rails]
-project_path = "/path/to/rails/project"
+# project_path はこのファイルの配置場所から自動推定されます
 timeout = 30
 
 [cache]

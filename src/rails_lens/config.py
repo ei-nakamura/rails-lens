@@ -92,6 +92,7 @@ def load_config(
         project_path
         or (Path(env_project_path) if env_project_path else None)
         or (Path(rails_section["project_path"]) if "project_path" in rails_section else None)
+        or (config_path.parent if config_path else None)
     )
 
     if resolved_project_path is None:

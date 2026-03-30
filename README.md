@@ -572,6 +572,16 @@ All diagrams are rendered in the browser via Mermaid.js — no server-side image
 
 ## Configuration
 
+### `RAILS_LENS_PROJECT_PATH`
+
+The absolute path to the root directory of the Rails application you want to analyze (the directory containing `Gemfile`, `app/`, `config/`, `db/`, etc.).
+
+This can be configured in the following ways (listed in order of priority):
+
+1. **Environment variable `RAILS_LENS_PROJECT_PATH`** — Required when running as an MCP server (Claude Code / Cursor), since the server process does not run from the Rails project directory.
+2. **`rails.project_path` in `.rails-lens.toml`** — Explicit path setting in the config file.
+3. **`.rails-lens.toml` location** — If `.rails-lens.toml` is placed in the Rails project root, the project path is automatically inferred from the file's parent directory. No explicit `project_path` setting is needed.
+
 ### Claude Code (`~/.claude/claude_desktop_config.json`)
 
 ```json
@@ -604,9 +614,11 @@ All diagrams are rendered in the browser via Mermaid.js — no server-side image
 
 ### `.rails-lens.toml` (optional, in your Rails project root)
 
+When placed in the Rails project root, `project_path` can be omitted — it is automatically resolved from the file's location.
+
 ```toml
 [rails]
-project_path = "/path/to/rails/project"
+# project_path is inferred from this file's location
 timeout = 30
 
 [cache]
