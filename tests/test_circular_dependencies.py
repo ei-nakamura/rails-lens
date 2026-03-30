@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -10,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from rails_lens.bridge.runner import RailsBridge
 from rails_lens.cache.manager import CacheManager
 from rails_lens.config import RailsLensConfig
+from rails_lens.errors import RailsRunnerExecutionError
 from rails_lens.models import CircularDependenciesInput
 from rails_lens.tools import circular_dependencies as circ_module
 
@@ -97,3 +99,39 @@ async def test_circular_deps_specific_model(mcp_and_tool) -> None:
     # bridge.execute が entry_point="User" の args で呼ばれることを確認
     bridge.execute.assert_called_once_with("circular_dependencies.rb", args=["User"])
     assert parsed["total_cycles"] == 1
+
+
+@pytest.mark.asyncio
+async def test_circular_deps_fallback_on_runner_error(
+    config: RailsLensConfig,
+    mock_bridge: RailsBridge,
+    cache_manager: CacheManager,
+    sample_rails_app: Path,
+) -> None:
+    """bridge失敗時にファイルベースフォールバックが使われ _metadata が付与される"""
+    # 循環するモデルファイルを作成
+    models_dir = sample_rails_app / "app" / "models"
+    (models_dir / "order.rb").write_text(
+        "class Order < ApplicationRecord\n"
+        "  belongs_to :user\n"
+        "end\n"
+    )
+    (models_dir / "user.rb").write_text(
+        "class User < ApplicationRecord\n"
+        "  has_many :orders\n"
+        "end\n"
+    )
+
+    mcp = FastMCP("test")
+    mock_bridge.execute = AsyncMock(side_effect=RailsRunnerExecutionError("unavailable"))
+    get_deps = _make_get_deps(config, mock_bridge, cache_manager)
+    circ_module.register(mcp, get_deps)
+    fn = mcp._tool_manager._tools["rails_lens_circular_dependencies"].fn
+
+    params = CircularDependenciesInput(format="json")
+    result = await fn(params)
+    parsed = json.loads(result)
+
+    assert "_metadata" in parsed
+    assert parsed["_metadata"]["source"] == "file_analysis"
+    assert "total_cycles" in parsed

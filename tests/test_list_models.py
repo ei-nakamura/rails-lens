@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from rails_lens.bridge.runner import RailsBridge
 from rails_lens.cache.manager import CacheManager
 from rails_lens.config import RailsLensConfig
+from rails_lens.errors import RailsRunnerExecutionError
 from rails_lens.tools import list_models as list_models_module
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -89,3 +90,29 @@ async def test_list_models_bridge_error(tool_fn) -> None:
 
     assert parsed["code"] == "LIST_MODELS_ERROR"
     assert "ruby crashed" in parsed["message"]
+
+
+@pytest.mark.asyncio
+async def test_list_models_fallback_on_runner_error(
+    config: RailsLensConfig,
+    mock_bridge: RailsBridge,
+    cache_manager: CacheManager,
+    sample_rails_app: Path,
+) -> None:
+    """RailsRunnerExecutionError 時にファイルベースフォールバックを使う"""
+    # conftest の sample_rails_app に既に user.rb が存在する
+    mcp = FastMCP("test")
+    get_deps = lambda: (config, mock_bridge, cache_manager, None)  # noqa: E731
+    list_models_module.register(mcp, get_deps)
+    fn = mcp._tool_manager._tools["rails_lens_list_models"].fn
+
+    mock_bridge.execute = AsyncMock(side_effect=RailsRunnerExecutionError("runner failed"))
+
+    result = await fn()
+    parsed = json.loads(result)
+
+    assert "models" in parsed
+    # user.rb → User が検出されるはず
+    names = [m["name"] for m in parsed["models"]]
+    assert "User" in names
+    assert parsed["_metadata"]["source"] == "file_analysis"

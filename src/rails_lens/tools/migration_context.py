@@ -1,6 +1,7 @@
 """rails_lens_migration_context ツール"""
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from rails_lens.errors import RailsRunnerExecutionError, RailsRunnerTimeoutError
 from rails_lens.models import (
     ColumnInfo,
     ErrorResponse,
@@ -23,10 +25,71 @@ from rails_lens.models import (
 )
 
 _MIGRATION_CLASS_RE = re.compile(r'class\s+(\w+)\s*<\s*ActiveRecord::Migration')
+_SCHEMA_CREATE_TABLE_RE = re.compile(r'create_table\s+"(\w+)"')
+_SCHEMA_COLUMN_RE = re.compile(
+    r't\.(string|integer|bigint|text|boolean|float|decimal|datetime|date|time|binary|json|jsonb|uuid|references)'
+    r'\s+"(\w+)"([^#\n]*)'
+)
+_SCHEMA_NULL_FALSE_RE = re.compile(r'null:\s*false')
+_SCHEMA_INDEX_RE = re.compile(r'add_index\s+"(\w+)",\s+(\[.*?\]|"(\w+)")')
+_SCHEMA_INDEX_COLS_RE = re.compile(r'"(\w+)"')
+_SCHEMA_UNIQUE_RE = re.compile(r'unique:\s*true')
+_SCHEMA_INDEX_NAME_RE = re.compile(r'name:\s*"([^"]+)"')
+_SCHEMA_FK_RE = re.compile(
+    r'add_foreign_key\s+"(\w+)",\s+"(\w+)"(?:.*?column:\s*"(\w+)")?'
+)
 _OPERATION_RE = re.compile(
     r'(create_table|add_column|remove_column|add_index|remove_index|'
     r'change_column|add_reference|rename_column|rename_table)\b[^#\n]*'
 )
+
+
+def _parse_schema_for_table(schema_path: Path, table_name: str) -> dict[str, Any]:
+    """db/schema.rb から指定テーブルのカラム・インデックス・外部キー情報を抽出する"""
+    try:
+        content = schema_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"columns": [], "indexes": [], "foreign_keys": []}
+
+    columns = []
+    indexes = []
+    foreign_keys = []
+
+    # Find create_table block for the target table
+    blocks = re.split(r'(?=create_table\s+")', content)
+    for block in blocks:
+        m = _SCHEMA_CREATE_TABLE_RE.match(block)
+        if not m or m.group(1) != table_name:
+            continue
+        for col_m in _SCHEMA_COLUMN_RE.finditer(block):
+            col_type, col_name, options = col_m.group(1), col_m.group(2), col_m.group(3)
+            null_allowed = not bool(_SCHEMA_NULL_FALSE_RE.search(options))
+            columns.append({
+                "name": col_name, "type": col_type,
+                "null": null_allowed, "default": None, "limit": None,
+            })
+        break
+
+    # Indexes for this table (from full content)
+    for idx_m in _SCHEMA_INDEX_RE.finditer(content):
+        if idx_m.group(1) != table_name:
+            continue
+        cols_str = idx_m.group(2)
+        idx_columns = _SCHEMA_INDEX_COLS_RE.findall(cols_str)
+        unique = bool(_SCHEMA_UNIQUE_RE.search(idx_m.group(0)))
+        name_m = _SCHEMA_INDEX_NAME_RE.search(idx_m.group(0))
+        idx_name = name_m.group(1) if name_m else f"index_{table_name}_on_{'_'.join(idx_columns)}"
+        indexes.append({"name": idx_name, "columns": idx_columns, "unique": unique})
+
+    # Foreign keys where from_table == table_name
+    for fk_m in _SCHEMA_FK_RE.finditer(content):
+        if fk_m.group(1) != table_name:
+            continue
+        to_table = fk_m.group(2)
+        from_col = fk_m.group(3) or f"{to_table.rstrip('s')}_id"
+        foreign_keys.append({"from_column": from_col, "to_table": to_table, "to_column": "id"})
+
+    return {"columns": columns, "indexes": indexes, "foreign_keys": foreign_keys}
 
 
 def _parse_migration_file(path: Path, table_name: str) -> MigrationHistoryItem | None:
@@ -203,12 +266,17 @@ def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
                 code="INITIALIZATION_ERROR", message=str(e)
             ).model_dump_json(indent=2)
 
+        file_analysis_fallback = False
         try:
             # ランタイム解析 (Ruby)
             raw_data = await bridge.execute(
                 "migration_context.rb",
                 args=[params.table_name, params.operation],
             )
+        except (RailsRunnerExecutionError, RailsRunnerTimeoutError, FileNotFoundError, OSError):
+            schema_path = config.rails_project_path / "db" / "schema.rb"
+            raw_data = _parse_schema_for_table(schema_path, params.table_name)
+            file_analysis_fallback = True
         except Exception as e:
             return ErrorResponse(
                 code="RUNTIME_ANALYSIS_ERROR", message=str(e)
@@ -298,6 +366,13 @@ def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
                 related_models=related_models,
                 estimated_row_count=raw_data.get("estimated_row_count"),
             )
+            if file_analysis_fallback:
+                result = output.model_dump()
+                result["_metadata"] = {
+                    "source": "file_analysis",
+                    "note": "Rails runner unavailable",
+                }
+                return json.dumps(result, ensure_ascii=False, indent=2)
             return output.model_dump_json(indent=2)
 
         except Exception as e:
