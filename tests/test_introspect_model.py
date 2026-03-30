@@ -11,7 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from rails_lens.bridge.runner import RailsBridge
 from rails_lens.cache.manager import CacheManager
 from rails_lens.config import RailsLensConfig
-from rails_lens.errors import ModelNotFoundError, RailsRunnerExecutionError, RailsRunnerTimeoutError
+from rails_lens.errors import ModelNotFoundError, RailsRunnerExecutionError
 from rails_lens.models import IntrospectModelInput
 from rails_lens.tools import introspect_model as introspect_module
 
