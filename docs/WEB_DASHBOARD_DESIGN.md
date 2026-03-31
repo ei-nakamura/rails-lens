@@ -18,6 +18,16 @@
 5. [HTTPトランスポートとの統合](#5-httpトランスポートとの統合)
 6. [ディレクトリ構造（追加分）](#6-ディレクトリ構造追加分)
 7. [REQUIREMENTS.md §9 整合性チェックリスト](#7-requirementsmd-9-整合性チェックリスト)
+8. [プロジェクト健全性ページ](#8-プロジェクト健全性ページcircular_dependencies--dead_code-連携)
+9. [リクエストフローページ](#9-リクエストフローページdata_flow-連携)
+10. [変更影響分析ページ](#10-変更影響分析ページimpact_analysis-連携)
+11. [リファクタリング支援ページ](#11-リファクタリング支援ページextract_concern--dead_code-連携)
+12. [Gem情報ページ](#12-gem情報ページgem_introspect-連携)
+13. [Mermaid出力要件](#13-mermaid出力要件phase-58実装指針)
+14. [画面台帳ページ（screen_map 連携）](#14-画面台帳ページscreen_map-連携)
+15. [影響範囲ハイライトの画面レベル拡張](#15-影響範囲ハイライトの画面レベル拡張)
+16. [コールバック連鎖専用可視化ページ](#16-コールバック連鎖専用可視化ページ)
+17. [画面マッピング機能のナビゲーション統合・ディレクトリ構造・設計上の注意点](#17-画面マッピング機能のナビゲーション統合ディレクトリ構造設計上の注意点)
 
 ---
 
@@ -776,6 +786,785 @@ class XxxOutput(BaseModel):
 - **ノードID**: `snake_case` を使用し、`[ラベル]`（矩形）、`(ラベル)`（角丸矩形）、`{ラベル}`（菱形）でノード種別を表現
 - **エッジラベル**: `A -->|"ラベル"| B` 形式（ラベルに記号を含む場合はクォート）
 - **スタイリング**: `style NodeId fill:#色コード` で重大度や種別を色で表現する（赤系 = critical/breaking、黄系 = warning、緑系 = ok）
+
+---
+
+## 14. 画面台帳ページ（screen_map 連携）
+
+> **前提ドキュメント**: [画面マッピング機能設計書 (SCREEN_MAP_FEATURE.md)](./SCREEN_MAP_FEATURE.md)
+>
+> 本セクションでは `rails_lens_screen_map` MCP ツールの出力を Web ダッシュボード上でどう表示するかに焦点を当てる。MCP ツール側の入出力仕様は前提ドキュメントを参照のこと。
+
+### 14.1 画面台帳一覧ページ (`/screens`)
+
+| 項目 | 内容 |
+|---|---|
+| **URL** | `GET /screens` |
+| **目的** | Rails アプリの全画面（Web 画面 + API エンドポイント）の台帳を表示する。ドキュメントが整備されていないプロジェクトの全体把握に使う |
+| **使用MCPツール** | `rails_lens_screen_map`（`mode: "full_inventory"`） |
+
+#### 14.1.1 統計サマリー
+
+ページ上部に統計カードを横並びで表示する:
+
+| カード | 値のソース |
+|---|---|
+| 全画面数 | `inventory.stats.total` |
+| Web 画面数 | `inventory.stats.web_count` |
+| API エンドポイント数 | `inventory.stats.api_count` |
+| 共有パーシャル数 | `len(inventory.shared_partials)` |
+
+```html
+{# screens.html 統計カード部分 #}
+<div class="grid">
+    <article><h3>{{ stats.total }}</h3><p>全画面数</p></article>
+    <article><h3>{{ stats.web_count }}</h3><p>Web 画面</p></article>
+    <article><h3>{{ stats.api_count }}</h3><p>API エンドポイント</p></article>
+    <article><h3>{{ shared_partials | length }}</h3><p>共有パーシャル</p></article>
+</div>
+```
+
+#### 14.1.2 フィルタ・検索
+
+PicoCSS + 素の JavaScript で実装する。フレームワークは使わない。
+
+| フィルタ種別 | UI 要素 | 動作 |
+|---|---|---|
+| テキスト検索 | `<input type="search">` | 画面名・URL・コントローラ名・モデル名で即時フィルタリング（`oninput` で JS 関数呼び出し） |
+| 名前空間フィルタ | `<select>` | ルート / Admin / Api::V1 等の名前空間で絞り込み |
+| 種別フィルタ | ラジオボタン 3 択 | 全て / Web 画面のみ / API のみ |
+
+```html
+{# screens.html の検索フィルタ部分 #}
+<fieldset role="group">
+    <input type="search" id="screenSearch" placeholder="画面名、URL、モデル名で検索..."
+           oninput="filterScreens()">
+    <select id="namespaceFilter" onchange="filterScreens()">
+        <option value="">全名前空間</option>
+        {% for ns in namespaces %}
+        <option value="{{ ns }}" {{ 'selected' if ns == current_namespace }}>{{ ns }}</option>
+        {% endfor %}
+    </select>
+</fieldset>
+<fieldset>
+    <label><input type="radio" name="kind" value="all" checked onchange="filterScreens()"> 全て</label>
+    <label><input type="radio" name="kind" value="web" onchange="filterScreens()"> Web 画面のみ</label>
+    <label><input type="radio" name="kind" value="api" onchange="filterScreens()"> API のみ</label>
+</fieldset>
+
+<script>
+function filterScreens() {
+    const query = document.getElementById('screenSearch').value.toLowerCase();
+    const ns = document.getElementById('namespaceFilter').value;
+    const kind = document.querySelector('input[name="kind"]:checked').value;
+    document.querySelectorAll('#screenTable tbody tr').forEach(row => {
+        const text = row.textContent.toLowerCase();
+        const rowNs = row.dataset.namespace || '';
+        const rowKind = row.dataset.kind || '';
+        const matchText = !query || text.includes(query);
+        const matchNs = !ns || rowNs === ns;
+        const matchKind = kind === 'all' || rowKind === kind;
+        row.style.display = (matchText && matchNs && matchKind) ? '' : 'none';
+    });
+}
+</script>
+```
+
+#### 14.1.3 メインテーブル
+
+| 列 | データソース | 備考 |
+|---|---|---|
+| 画面名 | `screen.name` | クリックで `/screens/{controller}/{action}` に遷移 |
+| URL パターン | `screen.url_pattern` | |
+| HTTP メソッド | `screen.http_method` | |
+| コントローラ#アクション | `screen.controller_action` | |
+| テンプレートファイル | `screen.template_file` | |
+| パーシャル数 | `screen.partial_count` | |
+| 使用モデル | `screen.models` | カンマ区切り |
+
+- API エンドポイントには `<mark>API</mark>` バッジを表示して Web 画面と視覚的に区別する
+- 各行に `data-namespace` / `data-kind` 属性を付与し、JavaScript フィルタの対象とする
+
+```html
+{# screens.html メインテーブル部分 #}
+<table id="screenTable">
+    <thead>
+        <tr>
+            <th>画面名</th><th>URL</th><th>メソッド</th>
+            <th>コントローラ#アクション</th><th>テンプレート</th>
+            <th>パーシャル数</th><th>使用モデル</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for s in screens %}
+        <tr data-namespace="{{ s.namespace }}" data-kind="{{ 'api' if s.is_api else 'web' }}">
+            <td>
+                <a href="/screens/{{ s.controller }}/{{ s.action }}">{{ s.name }}</a>
+                {% if s.is_api %}<mark>API</mark>{% endif %}
+            </td>
+            <td>{{ s.url_pattern }}</td>
+            <td>{{ s.http_method }}</td>
+            <td>{{ s.controller_action }}</td>
+            <td>{{ s.template_file }}</td>
+            <td>{{ s.partial_count }}</td>
+            <td>{{ s.models | join(', ') }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+```
+
+#### 14.1.4 共有パーシャル使用状況セクション
+
+テーブル下部に配置する。
+
+| 列 | データソース | 備考 |
+|---|---|---|
+| パーシャル名 | `partial.name` | クリックで `/screens/source?file={partial.file_path}` に遷移 |
+| 使用画面数 | `partial.used_in_count` | |
+| 影響レベル | `partial.impact_level` | critical / high / moderate / low |
+
+影響レベルに応じて PicoCSS の色クラスで行を色分けする:
+
+```html
+{# screens.html 共有パーシャルセクション #}
+<h3>共有パーシャル使用状況</h3>
+<table>
+    <thead>
+        <tr><th>パーシャル名</th><th>使用画面数</th><th>影響レベル</th></tr>
+    </thead>
+    <tbody>
+        {% for p in shared_partials %}
+        <tr>
+            <td><a href="/screens/source?file={{ p.file_path }}">{{ p.name }}</a></td>
+            <td>{{ p.used_in_count }}</td>
+            <td>
+                {% if p.impact_level == 'critical' %}<mark style="background:#ff6666">critical</mark>
+                {% elif p.impact_level == 'high' %}<mark style="background:#ffaa66">high</mark>
+                {% elif p.impact_level == 'moderate' %}<mark style="background:#ffdd66">moderate</mark>
+                {% else %}<mark style="background:#66cc66">low</mark>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+```
+
+### 14.2 画面詳細ページ (`/screens/{controller}/{action}`)
+
+| 項目 | 内容 |
+|---|---|
+| **URL** | `GET /screens/{controller}/{action}` |
+| **目的** | 特定画面を構成する全ファイルの一覧を表示する |
+| **使用MCPツール** | `rails_lens_screen_map`（`mode: "screen_to_source"`） |
+
+#### 14.2.1 表示内容
+
+| セクション | 内容 | 表示形式 |
+|---|---|---|
+| 画面基本情報 | 画面名、URL パターン、HTTP メソッド、コントローラ#アクション | 定義リスト（`<dl>`） |
+| テンプレート構成ツリー | layout → テンプレート → パーシャル（ネスト含む） | インデント付きリスト。各ファイルのパスを表示 |
+| ヘルパーメソッド一覧 | メソッド名、定義ファイル、行番号、呼び出し元 | テーブル |
+| モデル参照一覧 | モデル名（`/models/{model_name}` リンク）、アクセス属性・メソッド・関連 | モデル名ごとのネストリスト |
+| i18n キー一覧 | 使用 i18n キーと値 | テーブル |
+| ハードコードテキスト | i18n 化されていない直書きテキスト | 黄色背景（`style="background:#ffffcc"`）で強調表示 |
+
+```html
+{# screen_detail.html テンプレート構成ツリー部分 #}
+<h3>テンプレート構成</h3>
+<ul>
+    <li>📄 {{ screen.layout_file }} <small>(layout)</small>
+        <ul>
+            <li>📄 {{ screen.template_file }} <small>(template)</small>
+                <ul>
+                    {% for partial in screen.partials recursive %}
+                    <li>📄 {{ partial.file_path }}
+                        {% if partial.children %}
+                        <ul>{{ loop(partial.children) }}</ul>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </li>
+        </ul>
+    </li>
+</ul>
+```
+
+```html
+{# screen_detail.html ハードコードテキスト部分 #}
+{% if screen.hardcoded_texts %}
+<h3>ハードコードされたテキスト</h3>
+<p><small>i18n 化されていない直書きテキストです。国際化の改善余地として確認してください。</small></p>
+<table>
+    <thead><tr><th>テキスト</th><th>ファイル</th><th>行番号</th></tr></thead>
+    <tbody>
+        {% for t in screen.hardcoded_texts %}
+        <tr style="background:#ffffcc">
+            <td>{{ t.text }}</td>
+            <td>{{ t.file_path }}</td>
+            <td>{{ t.line_number }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+```
+
+### 14.3 ソース逆引きページ (`/screens/source`)
+
+| 項目 | 内容 |
+|---|---|
+| **URL** | `GET /screens/source` |
+| **クエリパラメータ** | `file`（ファイルパス）or `method`（ヘルパーメソッド名） |
+| **目的** | 特定のパーシャル・ヘルパー・モデルがどの画面で使われているかを表示する |
+| **使用MCPツール** | `rails_lens_screen_map`（`mode: "source_to_screens"`） |
+
+#### 14.3.1 表示内容
+
+| セクション | 内容 | 表示形式 |
+|---|---|---|
+| ソースファイル情報 | ファイルパス、ファイル種別（partial / helper / model / decorator） | 定義リスト（`<dl>`） |
+| 使用画面一覧 | 画面名、URL、コントローラ#アクション、呼び出し元ファイル:行番号 | テーブル。画面名は `/screens/{controller}/{action}` へのリンク |
+| 影響レベルバッジ | critical（赤）/ high（オレンジ）/ moderate（黄）/ low（緑） | PicoCSS `<mark>` + インラインカラー |
+
+- layout 経由で全画面に影響するパーシャルの場合は、ページ上部に赤い警告バナーを表示する:
+
+```html
+{# screen_source.html 警告バナー部分 #}
+{% if source.affects_all_screens %}
+<article style="background:#ff6666; color:white; padding:1rem; margin-bottom:1rem;">
+    ⚠️ このファイルは layout 経由で全画面に影響します。変更時は十分にご注意ください。
+</article>
+{% endif %}
+```
+
+### 14.4 内部 API エンドポイント
+
+| メソッド | パス | 処理内容 | レスポンス形式 |
+|---|---|---|---|
+| `GET` | `/screens` | 画面台帳表示 | HTML (Jinja2) |
+| `GET` | `/screens/{controller}/{action}` | 画面詳細表示 | HTML (Jinja2) |
+| `GET` | `/screens/source` | ソース逆引き表示 | HTML (Jinja2) |
+
+```python
+@app.get("/screens", response_class=HTMLResponse)
+async def screen_inventory(
+    request: Request,
+    namespace: str | None = None,
+    kind: str = "all",  # "all", "web", "api"
+):
+    inventory = await _call_screen_map(
+        mode="full_inventory",
+        include_api=True,
+        group_by="namespace",
+        locale="ja",
+    )
+    screens = inventory.screens
+    if namespace:
+        screens = [s for s in screens if s.namespace == namespace]
+    if kind == "web":
+        screens = [s for s in screens if not s.is_api]
+    elif kind == "api":
+        screens = [s for s in screens if s.is_api]
+
+    namespaces = sorted(set(s.namespace for s in inventory.screens))
+    return templates.TemplateResponse("screens.html", {
+        "request": request,
+        "screens": screens,
+        "shared_partials": inventory.shared_partials,
+        "stats": inventory.stats,
+        "namespaces": namespaces,
+        "current_namespace": namespace,
+        "current_kind": kind,
+    })
+
+
+@app.get("/screens/{controller}/{action}", response_class=HTMLResponse)
+async def screen_detail(request: Request, controller: str, action: str):
+    result = await _call_screen_map(
+        mode="screen_to_source",
+        controller_action=f"{controller}#{action}",
+    )
+    return templates.TemplateResponse("screen_detail.html", {
+        "request": request,
+        "screen": result,
+    })
+
+
+@app.get("/screens/source", response_class=HTMLResponse)
+async def screen_source_reverse(
+    request: Request,
+    file: str | None = None,
+    method: str | None = None,
+):
+    result = await _call_screen_map(
+        mode="source_to_screens",
+        file_path=file,
+        method_name=method,
+    )
+    return templates.TemplateResponse("screen_source.html", {
+        "request": request,
+        "source": result,
+    })
+```
+
+---
+
+## 15. 影響範囲ハイライトの画面レベル拡張
+
+### 15.1 概要
+
+既存の `/impact/{model_name}` ページ（セクション 10）を拡張し、影響範囲を **画面レベル** でもハイライトできるようにする。現在は「どのファイルが影響を受けるか」を表示しているが、「どの画面が影響を受けるか」も表示する。
+
+### 15.2 既存ページへの追加セクション
+
+`/impact/{model_name}?target=xxx&change_type=yyy` の結果表示に、以下のセクションを追加する。
+
+#### 15.2.1 影響を受ける画面一覧セクション
+
+処理フロー:
+
+1. `ImpactAnalysisOutput.affected_files` の中からビュー関連ファイル（`app/views/`、`app/helpers/`）を抽出する
+2. それらのファイルに対して `rails_lens_screen_map`（`mode: "source_to_screens"`）を呼び出し、影響を受ける画面の一覧を取得する
+3. 画面名、URL、影響レベル、影響経路（「パーシャル `_user_card.html.erb` 経由」等）をテーブル表示する
+
+表示仕様:
+
+| 列 | 内容 |
+|---|---|
+| 画面名 | `/screens/{controller}/{action}` へのリンク |
+| URL | 画面の URL パターン |
+| 影響レベル | critical / high / moderate / low バッジ |
+| 影響経路 | 「パーシャル `_xxx.html.erb` 経由」等の説明テキスト |
+
+- 影響レベル critical の画面がある場合、セクション上部に赤い警告バナーを表示する:
+
+```html
+{# impact.html 影響画面セクション部分 #}
+{% if affected_screens %}
+<h3>影響を受ける画面</h3>
+{% if affected_screens | selectattr('impact_level', 'equalto', 'critical') | list %}
+<article style="background:#ff6666; color:white; padding:1rem; margin-bottom:1rem;">
+    🔴 critical レベルの影響を受ける画面があります。変更前に十分な確認を行ってください。
+</article>
+{% endif %}
+<table>
+    <thead>
+        <tr><th>画面名</th><th>URL</th><th>影響レベル</th><th>影響経路</th></tr>
+    </thead>
+    <tbody>
+        {% for s in affected_screens %}
+        <tr>
+            <td><a href="/screens/{{ s.controller }}/{{ s.action }}">{{ s.name }}</a></td>
+            <td>{{ s.url_pattern }}</td>
+            <td>
+                {% if s.impact_level == 'critical' %}<mark style="background:#ff6666">critical</mark>
+                {% elif s.impact_level == 'high' %}<mark style="background:#ffaa66">high</mark>
+                {% elif s.impact_level == 'moderate' %}<mark style="background:#ffdd66">moderate</mark>
+                {% else %}<mark style="background:#66cc66">low</mark>
+                {% endif %}
+            </td>
+            <td>{{ s.impact_path }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+```
+
+#### 15.2.2 Mermaid 図への画面ノード追加
+
+既存の `graph LR` 形式の影響グラフに、画面ノードを追加する。ツール側（`rails_lens_analyze_impact`）の `mermaid_diagram` 生成ロジックを拡張する:
+
+```
+graph LR
+    Target["User.email"]
+    Target --> Validation["validation\nuser.rb:35"]
+    Target --> View["view\nusers/show.html.erb:11"]
+    Target --> Mailer["mailer\nUserMailer"]
+
+    View --> Screen_UserDetail["🖥️ ユーザー詳細\n/users/:id"]
+    View --> Screen_UserList["🖥️ ユーザー一覧\n/users"]
+    Mailer --> Screen_None["📧 メール送信\n（画面なし）"]
+
+    style Target fill:#ff6666
+    style Screen_UserDetail fill:#ffdddd
+    style Screen_UserList fill:#ffdddd
+```
+
+画面ノードの規則:
+
+- ノード ID: `Screen_{controller}_{action}` 形式
+- ラベル: `🖥️ {画面名}\n{URL パターン}` 形式
+- スタイル: `fill:#ffdddd`（薄い赤）で統一
+- メール送信等、画面を持たない影響先は `📧` アイコンで区別する
+
+### 15.3 内部 API エンドポイントの変更
+
+既存の `/impact/{model_name}` エンドポイントを拡張する。追加のクエリパラメータ:
+
+| パラメータ | デフォルト | 説明 |
+|---|---|---|
+| `include_screens` | `true` | 影響を受ける画面の逆引きを含めるか |
+
+```python
+@app.get("/impact/{model_name}", response_class=HTMLResponse)
+async def impact_analysis(
+    request: Request,
+    model_name: str,
+    target: str | None = None,
+    change_type: str = "modify",
+    include_screens: bool = True,  # 追加
+):
+    result = None
+    affected_screens = []
+    if target:
+        result = await _call_impact_analysis(model_name, target, change_type)
+        if include_screens and result:
+            # ビュー関連の affected_files から画面を逆引き
+            view_files = [
+                f for f in result.affected_files
+                if f.startswith("app/views/") or f.startswith("app/helpers/")
+            ]
+            for vf in view_files:
+                screen_result = await _call_screen_map(
+                    mode="source_to_screens", file_path=vf,
+                )
+                affected_screens.extend(screen_result.used_in_screens)
+            # 重複除去
+            seen = set()
+            affected_screens = [
+                s for s in affected_screens
+                if s.controller_action not in seen and not seen.add(s.controller_action)
+            ]
+    return templates.TemplateResponse("impact.html", {
+        "request": request,
+        "model_name": model_name,
+        "target": target,
+        "change_type": change_type,
+        "result": result,
+        "affected_screens": affected_screens,  # 追加
+    })
+```
+
+---
+
+## 16. コールバック連鎖専用可視化ページ
+
+### 16.1 ページ概要
+
+| 項目 | 内容 |
+|---|---|
+| **URL** | `GET /callbacks/{model_name}` |
+| **目的** | 特定モデルのコールバック連鎖を全ライフサイクルイベント横断で可視化する。既存の `/models/{model_name}` ページではコールバック情報がモデル詳細の一部として表示されるのに対し、このページはコールバックに特化した専用ビューを提供する |
+| **使用MCPツール** | `rails_lens_trace_callback_chain`（複数イベント分を一括取得） |
+
+### 16.2 既存ページとの違い
+
+| 観点 | 既存 `/models/{model_name}`（§2.3） | 新規 `/callbacks/{model_name}` |
+|---|---|---|
+| 対象イベント | `before_save` / `after_save` / `before_create` / `after_create` の 4 イベントのみ | **全ライフサイクルイベント** を網羅（validation, save, create, update, destroy, commit, initialize, find, touch） |
+| レイアウト | モデル詳細の一セクションとして埋め込み | コールバック連鎖に特化した専用レイアウト |
+| イベント間関係 | 個別表示のみ | save は create/update の親、といったイベント間の関係を俯瞰図で可視化 |
+| 警告表示 | なし | クロスモデル副作用、順序依存、ロックリスク等の警告を目立つ形で表示 |
+
+### 16.3 表示内容
+
+#### 16.3.1 全イベント俯瞰図
+
+ページ上部に、全イベントを横断した「コールバック全体像」の Mermaid 図を表示する。これは **ダッシュボード側で生成する**（ツール側の `mermaid_diagram` ではない）:
+
+```
+graph TB
+    subgraph "Validation Phase"
+        BV[before_validation] --> AV[after_validation]
+    end
+    subgraph "Save Phase"
+        BS[before_save] --> AR[around_save]
+        AR --> AS[after_save]
+    end
+    subgraph "Create Phase"
+        BC[before_create] --> AC[after_create]
+    end
+    subgraph "Commit Phase"
+        ACM[after_commit]
+    end
+
+    AV --> BS
+    AS --> ACM
+
+    BV --- |"2 callbacks"| BV
+    BS --- |"3 callbacks"| BS
+    AR --- |"1 callback"| AR
+    AS --- |"2 callbacks"| AS
+    BC --- |"1 callback"| BC
+    AC --- |"2 callbacks"| AC
+    ACM --- |"3 callbacks"| ACM
+```
+
+この図は各フェーズのコールバック数を一目で把握するためのもの。フェーズ名クリックで該当セクションにスクロールする。
+
+#### 16.3.2 イベント選択タブ
+
+ページ上部にライフサイクルイベントのタブを配置する:
+
+`validation` | `save` | `create` | `update` | `destroy` | `commit`
+
+- 各タブのラベルにコールバック数をバッジ表示（例: `save (11)`）
+- タブクリックで該当セクションにスクロール（JavaScript によるスムーススクロール）
+- SPA 的なタブ切り替えではなく、全イベント分を 1 ページに描画してアンカーリンクで移動する
+
+```html
+{# callbacks.html イベント選択タブ部分 #}
+<nav>
+    <ul>
+        {% for event in events %}
+        {% set chain = chains[event] %}
+        {% if chain and chain.callback_chain %}
+        <li>
+            <a href="#event-{{ event }}">
+                {{ event }} <sup>{{ chain.callback_chain | length }}</sup>
+            </a>
+        </li>
+        {% endif %}
+        {% endfor %}
+    </ul>
+</nav>
+```
+
+#### 16.3.3 各イベントのコールバック連鎖表示
+
+各イベントセクションは以下の 3 パートで構成する:
+
+**① Mermaid sequenceDiagram**:
+
+- `TraceCallbackChainOutput.mermaid_diagram` をそのまま `<div class="mermaid">` に埋め込む
+- Concern 由来のコールバックは participant 名に Concern 名を含める
+- Mermaid 図が大きくなりすぎる場合（コールバック 30 個超）のフォールバック: テーブル表示のみに切り替える
+
+```html
+{# callbacks.html 各イベントの Mermaid 図部分 #}
+{% if chain.callback_chain | length <= 30 and chain.mermaid_diagram %}
+<div class="mermaid">{{ chain.mermaid_diagram }}</div>
+{% else %}
+<p><small>コールバック数が多いため、テーブル表示のみとなります。</small></p>
+{% endif %}
+```
+
+**② コールバックテーブル**:
+
+| 列 | データソース | 備考 |
+|---|---|---|
+| 実行順序 | `callback.order` | |
+| 種別 | `callback.kind` | before / after / around |
+| メソッド名 | `callback.method_name` | `around` には 🔄 アイコン付与 |
+| 定義元 | `callback.defined_in` | Concern 名 or モデル自身 |
+| ファイルパス:行番号 | `callback.file_path`:`callback.line_number` | |
+| 条件 | `callback.conditions` | if / unless / on |
+
+- Concern 由来の行は背景色を変える（`<ins>` 要素で薄い緑背景）
+- `around` コールバックの行には 🔄 を付与し、「yield の前後で処理が分かれる」ことを示す
+
+```html
+{# callbacks.html コールバックテーブル部分 #}
+<table>
+    <thead>
+        <tr>
+            <th>#</th><th>種別</th><th>メソッド</th>
+            <th>定義元</th><th>ファイル</th><th>条件</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for cb in chain.callback_chain %}
+        <tr {% if cb.defined_in != model_name %}style="background:#e6ffe6"{% endif %}>
+            <td>{{ cb.order }}</td>
+            <td>{{ cb.kind }}</td>
+            <td>{% if cb.kind == 'around' %}🔄 {% endif %}{{ cb.method_name }}</td>
+            <td>{{ cb.defined_in }}</td>
+            <td>{{ cb.file_path }}:{{ cb.line_number }}</td>
+            <td>{{ cb.conditions or '—' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+```
+
+**③ 警告セクション**:
+
+`TraceCallbackChainOutput.warnings` を `<article>` タグ（PicoCSS の警告カード）で表示する。
+
+| 警告種別 | アイコン | 説明 |
+|---|---|---|
+| クロスモデル副作用 | 🔴 | 別モデルを更新している |
+| 順序依存 | 🟡 | コールバックの実行順序に依存した計算がある |
+| ロックリスク | 🟠 | `around_save` 内で DB ロックを取得している |
+| 外部 API 呼び出し | 🔵 | 同期的な外部通信がある |
+
+```html
+{# callbacks.html 警告セクション部分 #}
+{% if chain.warnings %}
+{% for w in chain.warnings %}
+<article>
+    {% if w.type == 'cross_model' %}🔴
+    {% elif w.type == 'order_dependent' %}🟡
+    {% elif w.type == 'lock_risk' %}🟠
+    {% elif w.type == 'external_api' %}🔵
+    {% endif %}
+    <strong>{{ w.title }}</strong>
+    <p>{{ w.description }}</p>
+</article>
+{% endfor %}
+{% endif %}
+```
+
+### 16.4 内部 API エンドポイント
+
+| メソッド | パス | 処理内容 | レスポンス形式 |
+|---|---|---|---|
+| `GET` | `/callbacks/{model_name}` | コールバック連鎖専用ページ表示 | HTML (Jinja2) |
+
+```python
+LIFECYCLE_EVENTS = [
+    "validation", "save", "create", "update", "destroy", "commit",
+    "initialize", "find", "touch",
+]
+
+@app.get("/callbacks/{model_name}", response_class=HTMLResponse)
+async def callback_chains(request: Request, model_name: str):
+    chains = {}
+    for event in LIFECYCLE_EVENTS:
+        try:
+            chains[event] = await _call_trace_callback_chain(model_name, event)
+        except RailsLensError:
+            chains[event] = None
+
+    # 全イベント俯瞰図の生成（ダッシュボード側で組み立て）
+    overview_mermaid = _generate_callback_overview_mermaid(model_name, chains)
+
+    # 警告の集約（全イベント横断）
+    all_warnings = []
+    for event, chain in chains.items():
+        if chain and chain.warnings:
+            for w in chain.warnings:
+                all_warnings.append({"event": event, "warning": w})
+
+    return templates.TemplateResponse("callbacks.html", {
+        "request": request,
+        "model_name": model_name,
+        "chains": chains,
+        "events": LIFECYCLE_EVENTS,
+        "overview_mermaid": overview_mermaid,
+        "all_warnings": all_warnings,
+    })
+
+
+def _generate_callback_overview_mermaid(
+    model_name: str,
+    chains: dict,
+) -> str:
+    """全ライフサイクルイベントの俯瞰 Mermaid 図を生成する"""
+    lines = ["graph TB"]
+
+    phase_map = {
+        "validation": ("Validation Phase", ["before_validation", "after_validation"]),
+        "save": ("Save Phase", ["before_save", "around_save", "after_save"]),
+        "create": ("Create Phase", ["before_create", "after_create"]),
+        "update": ("Update Phase", ["before_update", "after_update"]),
+        "destroy": ("Destroy Phase", ["before_destroy", "after_destroy"]),
+        "commit": ("Commit Phase", ["after_commit", "after_rollback"]),
+    }
+
+    for event, (phase_label, sub_events) in phase_map.items():
+        chain = chains.get(event)
+        if not chain:
+            continue
+        count = len(chain.callback_chain) if chain.callback_chain else 0
+        if count == 0:
+            continue
+
+        lines.append(f'    {event}["{phase_label}<br/>{count} callbacks"]')
+
+    # フェーズ間の接続
+    if chains.get("validation") and chains.get("save"):
+        lines.append("    validation --> save")
+    if chains.get("save") and chains.get("commit"):
+        lines.append("    save --> commit")
+
+    return "\n".join(lines) if len(lines) > 1 else ""
+```
+
+---
+
+## 17. 画面マッピング機能のナビゲーション統合・ディレクトリ構造・設計上の注意点
+
+### 17.1 既存ナビゲーションへの統合
+
+`base.html` のグローバルナビゲーション（`<nav>` タグ）に「画面台帳」リンクを追加する:
+
+```html
+<nav>
+    <ul>
+        <li><a href="/">ダッシュボード</a></li>
+        <li><a href="/models">モデル</a></li>
+        <li><a href="/er">ER図</a></li>
+        <li><a href="/screens">画面台帳</a></li>   {# 追加 #}
+        <li><a href="/gems">Gem</a></li>
+        <li><a href="/cache">キャッシュ</a></li>
+    </ul>
+</nav>
+```
+
+また、既存のモデル詳細ページ（`/models/{model_name}`）の `model_detail.html` に以下のリンクを追加する:
+
+```html
+{# model_detail.html に追加するリンクセクション #}
+<nav>
+    <ul>
+        <li><a href="/callbacks/{{ model_name }}">コールバック詳細を見る →</a></li>
+        <li><a href="/impact/{{ model_name }}">影響分析を行う →</a></li>
+        <li><a href="/screens/source?file=app/models/{{ model_name | underscore }}.rb">このモデルを使っている画面 →</a></li>
+    </ul>
+</nav>
+```
+
+### 17.2 ディレクトリ構造（追加テンプレート）
+
+```
+src/rails_lens/web/templates/
+├── screens.html           # 画面台帳（§14.1）
+├── screen_detail.html     # 画面詳細 — screen_to_source（§14.2）
+├── screen_source.html     # ソース逆引き — source_to_screens（§14.3）
+└── callbacks.html         # コールバック連鎖専用ページ（§16）
+```
+
+既存テンプレートへの変更:
+
+| ファイル | 変更内容 | 関連セクション |
+|---|---|---|
+| `impact.html` | 影響を受ける画面一覧セクションの追加 | §15 |
+| `model_detail.html` | コールバック詳細・画面逆引きへのリンク追加 | §17.1 |
+| `base.html` | ナビゲーションに「画面台帳」リンク追加 | §17.1 |
+
+### 17.3 ルーティング追加（routes/ ディレクトリ）
+
+```
+src/rails_lens/web/routes/
+├── screens.py             # GET /screens, GET /screens/{controller}/{action}, GET /screens/source
+└── callbacks.py           # GET /callbacks/{model_name}
+```
+
+### 17.4 設計上の注意点
+
+| 項目 | 方針 |
+|---|---|
+| **JS フレームワーク不使用** | テーブルのフィルタリングは PicoCSS + 素の JavaScript で行う。React / Vue 等のフレームワークは導入しない |
+| **画面台帳の初回表示パフォーマンス** | 全ルーティングの走査が必要なため重い。`CacheManager` を活用し、2 回目以降は高速に表示する |
+| **ソース逆引きのインデックス** | `/screens/source` での逆引きは事前にインデックスが構築されている必要がある。未構築の場合は「インデックスを構築中…」のプログレス表示を出す |
+| **コールバック一括取得の負荷** | 全イベント一括取得は `rails runner` の呼び出し回数が多い（最大 9 回）。キャッシュがない初回は数十秒かかる可能性がある。ページ上部にローディングインジケータを表示し、全取得完了後に一括レンダリングする（Jinja2 SSR のためストリーミング不可。将来的に htmx 導入で段階的ロードも検討可能） |
+| **Mermaid 図のフォールバック** | コールバック 30 個超等で Mermaid 図が大きくなりすぎる場合はテーブル表示に切り替える |
+| **`_call_screen_map` ヘルパー** | 既存の `_call_impact_analysis` / `_call_data_flow` と同じパターンで、MCP ツール呼び出しをラップするヘルパー関数を `app.py` または `routes/screens.py` に定義する |
 
 ---
 
