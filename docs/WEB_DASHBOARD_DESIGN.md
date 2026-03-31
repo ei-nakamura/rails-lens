@@ -28,6 +28,7 @@
 15. [影響範囲ハイライトの画面レベル拡張](#15-影響範囲ハイライトの画面レベル拡張)
 16. [コールバック連鎖専用可視化ページ](#16-コールバック連鎖専用可視化ページ)
 17. [画面マッピング機能のナビゲーション統合・ディレクトリ構造・設計上の注意点](#17-画面マッピング機能のナビゲーション統合ディレクトリ構造設計上の注意点)
+18. [SQL診断ページ（schema_audit / query_audit / query_preview 連携）](#18-sql診断ページschema_audit--query_audit--query_preview-連携)
 
 ---
 
@@ -196,6 +197,7 @@ erDiagram
 | `GET` | `/cache` | キャッシュ管理ページ表示 | HTML (Jinja2) |
 | `POST` | `/cache/invalidate` | 全キャッシュ無効化 | リダイレクト (`303 /cache`) |
 | `POST` | `/cache/invalidate/{tool_name}` | 特定ツールのキャッシュ無効化 | リダイレクト (`303 /cache`) |
+| `GET` | `/sql` | SQL 診断結果の統合表示（スキーマ診断・クエリ診断・クエリプレビュー） | HTML (Jinja2) |
 
 ### 4.2 各エンドポイント詳細
 
@@ -1565,6 +1567,80 @@ src/rails_lens/web/routes/
 | **コールバック一括取得の負荷** | 全イベント一括取得は `rails runner` の呼び出し回数が多い（最大 9 回）。キャッシュがない初回は数十秒かかる可能性がある。ページ上部にローディングインジケータを表示し、全取得完了後に一括レンダリングする（Jinja2 SSR のためストリーミング不可。将来的に htmx 導入で段階的ロードも検討可能） |
 | **Mermaid 図のフォールバック** | コールバック 30 個超等で Mermaid 図が大きくなりすぎる場合はテーブル表示に切り替える |
 | **`_call_screen_map` ヘルパー** | 既存の `_call_impact_analysis` / `_call_data_flow` と同じパターンで、MCP ツール呼び出しをラップするヘルパー関数を `app.py` または `routes/screens.py` に定義する |
+
+---
+
+## 18. SQL診断ページ（schema_audit / query_audit / query_preview 連携）
+
+> **詳細設計**: [SQL_DIAGNOSTICS_FEATURE.md](./SQL_DIAGNOSTICS_FEATURE.md) §7「ダッシュボードページ設計」を参照
+
+### 18.1 ページ概要
+
+| 項目 | 内容 |
+|---|---|
+| **URL** | `GET /sql` |
+| **目的** | スキーマ診断、クエリパターン診断、クエリプレビューの結果を統合表示する |
+| **使用 MCP ツール** | `rails_lens_schema_audit` + `rails_lens_query_audit` + `rails_lens_query_preview` + `rails_lens_query_preview_snippet` |
+
+### 18.2 表示内容
+
+#### サマリーカード
+
+ページ上部に重大度ごとの問題数を表示する。スキーマ診断とクエリ診断の内訳も表示。
+
+#### タブ構成
+
+- **全て** | **スキーマ診断** | **クエリ診断** | **クエリプレビュー**
+
+各タブ内ではさらに重大度フィルタ（critical / warning / info / all）で絞り込み可能（クエリプレビュータブでは重大度フィルタは非表示）。タブとフィルタはクエリパラメータ `?tab=schema&severity=critical` で URL に反映する。
+
+#### クエリプレビュータブ
+
+モデル選択とクエリプレビュー機能を提供する:
+
+- **モデル選択フォーム**: `list_models` で取得したモデル一覧をドロップダウンで表示。選択するとそのモデルのスコープ一覧と予測 SQL を表示
+- **暗黙の条件警告**: `default_scope` や論理削除 Gem（`acts_as_paranoid` 等）が検出された場合、ページ上部に警告バナーを表示
+- **スコープ一覧テーブル**: 各スコープの Ruby 定義・予測 SQL・インデックス状況を横並びで表示。インデックスがない場合は黄色背景 + 警告アイコン
+- **Association クエリ**: association アクセス時に発行される SQL を予測表示
+- **スコープチェーン例**: コードベースから検出された実際のスコープチェーンの使用例と予測 SQL
+- **コードスニペット入力フォーム**: 任意の ActiveRecord メソッドチェーンを入力して SQL を予測する。メソッドと SQL 句の対応を `←` で注釈表示
+- **精度注記**: 「この SQL は静的解析による予測です。実際のクエリは DB アダプタやバージョンによって異なる場合があります」
+
+### 18.3 内部 API エンドポイント
+
+| メソッド | パス | 処理内容 | レスポンス形式 |
+|---|---|---|---|
+| `GET` | `/sql` | SQL 診断結果の統合表示 | HTML (Jinja2) |
+
+クエリパラメータ:
+
+| パラメータ | 型 | デフォルト | 説明 |
+|---|---|---|---|
+| `tab` | `str` | `"all"` | `"all"`, `"schema"`, `"query"`, `"preview"` |
+| `severity` | `str` | `"all"` | `"all"`, `"critical"`, `"warning"`, `"info"` |
+| `table` | `str \| None` | `None` | 特定テーブルに絞る（スキーマ診断用） |
+| `model` | `str \| None` | `None` | クエリプレビュー用: 対象モデル名 |
+| `code` | `str \| None` | `None` | クエリプレビュー用: コードスニペット入力 |
+
+`tab=preview` かつ `model` が指定された場合のみ `_call_query_preview` / `_call_query_preview_snippet` を呼び出す。それ以外のタブでは既存の `_call_schema_audit` / `_call_query_audit` のみ呼び出す。
+
+### 18.4 ナビゲーション
+
+`base.html` のグローバルナビゲーションに「SQL診断」リンクを追加する:
+
+```html
+<nav>
+    <ul>
+        <li><a href="/">ダッシュボード</a></li>
+        <li><a href="/models">モデル</a></li>
+        <li><a href="/er">ER図</a></li>
+        <li><a href="/screens">画面台帳</a></li>
+        <li><a href="/sql">SQL診断</a></li>   {# 追加 #}
+        <li><a href="/gems">Gem</a></li>
+        <li><a href="/cache">キャッシュ</a></li>
+    </ul>
+</nav>
+```
 
 ---
 

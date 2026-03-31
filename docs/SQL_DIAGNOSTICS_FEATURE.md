@@ -14,13 +14,16 @@
 3. [ツール仕様](#3-ツール仕様)
    - [ツール1: rails_lens_schema_audit](#ツール1-rails_lens_schema_audit)
    - [ツール2: rails_lens_query_audit](#ツール2-rails_lens_query_audit)
+   - [ツール3: rails_lens_query_preview](#ツール3-rails_lens_query_preview)
+   - [ツール4: rails_lens_query_preview_snippet](#ツール4-rails_lens_query_preview_snippet)
 4. [検出ルール一覧](#4-検出ルール一覧)
-5. [実装方針](#5-実装方針)
-6. [ダッシュボードページ設計](#6-ダッシュボードページ設計)
-7. [既存ツールとの連携](#7-既存ツールとの連携)
-8. [ディレクトリ構造](#8-ディレクトリ構造)
-9. [実装の難易度と工数](#9-実装の難易度と工数)
-10. [設計上の注意点](#10-設計上の注意点)
+5. [ActiveRecord メソッド → SQL 変換ルール](#5-activerecord-メソッド--sql-変換ルール)
+6. [実装方針](#6-実装方針)
+7. [ダッシュボードページ設計](#7-ダッシュボードページ設計)
+8. [既存ツールとの連携](#8-既存ツールとの連携)
+9. [ディレクトリ構造](#9-ディレクトリ構造)
+10. [実装の難易度と工数](#10-実装の難易度と工数)
+11. [設計上の注意点](#11-設計上の注意点)
 
 ---
 
@@ -325,6 +328,332 @@ async def query_audit(params: QueryAuditInput) -> str:
 
 ---
 
+### ツール3: rails_lens_query_preview
+
+#### 解決する課題と利用シーン
+
+- **課題**: ActiveRecord は SQL を隠蔽するため、開発者が自分の書いたコードがどんなクエリを発行しているか意識しにくい。スコープを複数チェーンした結果が想定より複雑な SQL になっている、`includes` と `joins` の違いによる発行クエリ数の変化を知らない、enum のシンボル（`:active`）が整数値（`0`）に変換されることを知らない、`has_many :through` の裏で中間テーブルの JOIN が発生していることに気づかない、`default_scope` や `acts_as_paranoid` による暗黙の WHERE 句を見落とす等のケースで問題になる
+- **利用シーン**: 指定したモデルに定義されている全スコープとクエリ関連メソッドについて、予測 SQL を一覧表示する。クエリの最適化やインデックス設計の判断に使用する
+
+#### 入力スキーマ
+
+```python
+class QueryPreviewInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    model_name: str = Field(
+        ...,
+        description="対象モデル名 (例: 'Order')",
+        min_length=1,
+        max_length=200
+    )
+    include_associations: bool = Field(
+        default=True,
+        description="association アクセス時のクエリも含めるか"
+    )
+    include_chain_examples: bool = Field(
+        default=True,
+        description="コードベースで実際に使われているスコープチェーンの例も含めるか"
+    )
+```
+
+#### 出力スキーマ
+
+```python
+class EnumResolution(BaseModel):
+    column: str
+    mapping: dict[str, int]
+
+class ImplicitCondition(BaseModel):
+    source: str
+    sql_fragment: str
+    note: str
+
+class ScopePreview(BaseModel):
+    name: str
+    ruby_definition: str
+    location: FileLocation
+    predicted_sql: str
+    parameters: list[str] | None = None
+    enum_resolution: dict[str, dict[str, int]] | None = None
+    index_used: str | None = None
+    index_exists: bool
+    warning: str | None = None
+
+class ScopeChainExample(BaseModel):
+    ruby: str
+    found_in: str
+    predicted_sql: str
+    index_used: str | None = None
+    index_exists: bool
+    efficiency: str
+
+class AssociationQuery(BaseModel):
+    association: str
+    type: str
+    access_pattern: str
+    predicted_sql: str
+    index_used: str | None = None
+    index_exists: bool
+
+class QueryPreviewOutput(BaseModel):
+    model_name: str
+    table_name: str
+    default_scope: str | None = None
+    implicit_conditions: list[ImplicitCondition]
+    scopes: list[ScopePreview]
+    scope_chains: list[ScopeChainExample]
+    association_queries: list[AssociationQuery]
+    accuracy: str = "predicted (static analysis)"
+```
+
+#### 出力例
+
+```json
+{
+  "model_name": "Order",
+  "table_name": "orders",
+  "default_scope": null,
+  "implicit_conditions": [
+    {
+      "source": "acts_as_paranoid (gem)",
+      "sql_fragment": "WHERE \"orders\".\"deleted_at\" IS NULL",
+      "note": "全クエリに暗黙的に追加される"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "pending",
+      "ruby_definition": "scope :pending, -> { where(status: :pending) }",
+      "location": { "file": "app/models/order.rb", "line": 12 },
+      "predicted_sql": "SELECT \"orders\".* FROM \"orders\" WHERE \"orders\".\"status\" = 0",
+      "enum_resolution": { "status": { "pending": 0 } },
+      "index_used": "index_orders_on_status (predicted)",
+      "index_exists": true
+    },
+    {
+      "name": "confirmed",
+      "ruby_definition": "scope :confirmed, -> { where(status: :confirmed) }",
+      "location": { "file": "app/models/order.rb", "line": 13 },
+      "predicted_sql": "SELECT \"orders\".* FROM \"orders\" WHERE \"orders\".\"status\" = 1",
+      "enum_resolution": { "status": { "confirmed": 1 } },
+      "index_used": "index_orders_on_status (predicted)",
+      "index_exists": true
+    },
+    {
+      "name": "for_user",
+      "ruby_definition": "scope :for_user, ->(uid) { where(user_id: uid) }",
+      "location": { "file": "app/models/order.rb", "line": 16 },
+      "predicted_sql": "SELECT \"orders\".* FROM \"orders\" WHERE \"orders\".\"user_id\" = $1",
+      "parameters": ["uid"],
+      "index_used": "index_orders_on_user_id (predicted)",
+      "index_exists": true
+    },
+    {
+      "name": "high_value",
+      "ruby_definition": "scope :high_value, -> { where(\"total_amount > ?\", 10000) }",
+      "location": { "file": "app/models/order.rb", "line": 17 },
+      "predicted_sql": "SELECT \"orders\".* FROM \"orders\" WHERE (total_amount > 10000)",
+      "index_used": null,
+      "index_exists": false,
+      "warning": "total_amount にインデックスがありません。データ量が多い場合はフルテーブルスキャンになります"
+    },
+    {
+      "name": "recent",
+      "ruby_definition": "scope :recent, -> { order(created_at: :desc).limit(10) }",
+      "location": { "file": "app/models/order.rb", "line": 15 },
+      "predicted_sql": "SELECT \"orders\".* FROM \"orders\" ORDER BY \"orders\".\"created_at\" DESC LIMIT 10",
+      "index_used": null,
+      "index_exists": false,
+      "warning": "created_at に降順インデックスがありません。ORDER BY + LIMIT の効率化にインデックスが有効です"
+    }
+  ],
+  "scope_chains": [
+    {
+      "ruby": "Order.pending.for_user(user_id).recent",
+      "found_in": "app/controllers/api/v1/orders_controller.rb:12",
+      "predicted_sql": "SELECT \"orders\".* FROM \"orders\" WHERE \"orders\".\"status\" = 0 AND \"orders\".\"user_id\" = $1 ORDER BY \"orders\".\"created_at\" DESC LIMIT 10",
+      "index_used": "index_orders_on_user_id_and_status (predicted)",
+      "index_exists": true,
+      "efficiency": "good"
+    }
+  ],
+  "association_queries": [
+    {
+      "association": "order_items",
+      "type": "has_many",
+      "access_pattern": "order.order_items",
+      "predicted_sql": "SELECT \"order_items\".* FROM \"order_items\" WHERE \"order_items\".\"order_id\" = $1",
+      "index_used": "index_order_items_on_order_id (predicted)",
+      "index_exists": true
+    },
+    {
+      "association": "products (through: order_items)",
+      "type": "has_many :through",
+      "access_pattern": "order.products",
+      "predicted_sql": "SELECT \"products\".* FROM \"products\" INNER JOIN \"order_items\" ON \"products\".\"id\" = \"order_items\".\"product_id\" WHERE \"order_items\".\"order_id\" = $1",
+      "index_used": "index_order_items_on_order_id + index_order_items_on_product_id (predicted)",
+      "index_exists": true
+    }
+  ],
+  "accuracy": "predicted (static analysis)"
+}
+```
+
+#### ツール定義
+
+```python
+@mcp.tool(
+    name="rails_lens_query_preview",
+    annotations={
+        "title": "ActiveRecord Query SQL Preview",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    }
+)
+async def query_preview(params: QueryPreviewInput) -> str:
+    '''ActiveRecord のスコープや関連アクセスが発行する SQL を予測して表示する。
+    DB への接続は不要。enum の値解決、暗黙の条件（default_scope 等）の検出、
+    インデックスの適用可否判定も含む。
+    クエリの最適化やインデックス設計の判断に使用する。
+    '''
+    ...
+```
+
+---
+
+### ツール4: rails_lens_query_preview_snippet
+
+#### 解決する課題と利用シーン
+
+- **課題**: Ruby のコードスニペット（ActiveRecord のメソッドチェーン）がどのような SQL を発行するか、実行前に把握したい。特に `includes` と `joins` の違いによるクエリ数の変化、enum シンボルの整数変換、メソッドチェーンの各部分が SQL のどの句に対応するかを理解したい
+- **利用シーン**: コードレビュー時の SQL 確認、ActiveRecord クエリの最適化検討、学習目的での SQL 理解
+
+#### 入力スキーマ
+
+```python
+class QueryPreviewSnippetInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    code: str = Field(
+        ...,
+        description="ActiveRecord のメソッドチェーン (例: 'User.where(status: :active).order(:name)')",
+        min_length=1,
+        max_length=2000
+    )
+    model_name: str | None = Field(
+        default=None,
+        description="モデル名。code から推定できない場合に指定する"
+    )
+```
+
+#### 出力スキーマ
+
+```python
+class MethodBreakdown(BaseModel):
+    method: str
+    sql_fragment: str
+
+class IndexApplicability(BaseModel):
+    name: str
+    applicable: bool
+    reason: str | None = None
+
+class AlternativeQuery(BaseModel):
+    method: str
+    predicted_sql: str
+    difference: str
+
+class PredictedQuery(BaseModel):
+    query_number: int
+    purpose: str
+    predicted_sql: str
+    enum_resolutions: dict[str, dict[str, int]] | None = None
+    note: str | None = None
+    method_breakdown: list[MethodBreakdown]
+    indexes_used: list[IndexApplicability] | None = None
+    alternative: AlternativeQuery | None = None
+
+class QueryPreviewSnippetOutput(BaseModel):
+    input_code: str
+    queries: list[PredictedQuery]
+    total_queries: int
+    select_star_warning: str | None = None
+    recommendations: list[str]
+    accuracy: str = "predicted (static analysis)"
+```
+
+#### 出力例
+
+```json
+{
+  "input_code": "User.where(status: :active).includes(:orders).where(company_id: 5).order(:name).limit(10)",
+  "queries": [
+    {
+      "query_number": 1,
+      "purpose": "メインクエリ（Users 取得）",
+      "predicted_sql": "SELECT \"users\".* FROM \"users\" WHERE \"users\".\"status\" = 0 AND \"users\".\"company_id\" = 5 ORDER BY \"users\".\"name\" ASC LIMIT 10",
+      "enum_resolutions": { "status": { "active": 0 } },
+      "method_breakdown": [
+        { "method": ".where(status: :active)", "sql_fragment": "WHERE \"users\".\"status\" = 0" },
+        { "method": ".where(company_id: 5)", "sql_fragment": "AND \"users\".\"company_id\" = 5" },
+        { "method": ".order(:name)", "sql_fragment": "ORDER BY \"users\".\"name\" ASC" },
+        { "method": ".limit(10)", "sql_fragment": "LIMIT 10" }
+      ],
+      "indexes_used": [
+        { "name": "index_users_on_email_and_company_id", "applicable": false, "reason": "先頭カラムが email（company_id ではない）のため、この WHERE には使えない" },
+        { "name": "index_users_on_company_id", "applicable": true }
+      ]
+    },
+    {
+      "query_number": 2,
+      "purpose": "eager loading（Orders 一括取得）",
+      "predicted_sql": "SELECT \"orders\".* FROM \"orders\" WHERE \"orders\".\"user_id\" IN ($1, $2, $3, ...)",
+      "note": "includes(:orders) により、取得した User の ID リストで Orders を一括取得する。N+1 を防止している",
+      "method_breakdown": [
+        { "method": ".includes(:orders)", "sql_fragment": "WHERE \"orders\".\"user_id\" IN (...)" }
+      ],
+      "alternative": {
+        "method": ".joins(:orders) を使った場合",
+        "predicted_sql": "SELECT \"users\".* FROM \"users\" INNER JOIN \"orders\" ON \"orders\".\"user_id\" = \"users\".\"id\" WHERE \"users\".\"status\" = 0 AND \"users\".\"company_id\" = 5 ORDER BY \"users\".\"name\" ASC LIMIT 10",
+        "difference": "includes は 2 クエリ発行（Users + Orders 別々）。joins は 1 クエリ（INNER JOIN）だが、Orders のデータは取得しない。関連データを使うなら includes、フィルタ目的なら joins が適切"
+      }
+    }
+  ],
+  "total_queries": 2,
+  "select_star_warning": "SELECT * を使用しています。必要なカラムが限定的なら .select(:id, :name, :email) で指定するとパフォーマンスが向上します",
+  "recommendations": [
+    "company_id 単独のインデックスは存在しますが、(company_id, status, name) の複合インデックスがあると、この特定のクエリは WHERE + ORDER BY をインデックスだけで解決できます"
+  ],
+  "accuracy": "predicted (static analysis)"
+}
+```
+
+#### ツール定義
+
+```python
+@mcp.tool(
+    name="rails_lens_query_preview_snippet",
+    annotations={
+        "title": "ActiveRecord Code to SQL Converter",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    }
+)
+async def query_preview_snippet(params: QueryPreviewSnippetInput) -> str:
+    '''ActiveRecord のメソッドチェーンのコードスニペットを入力すると、
+    発行される SQL を予測して返す。各メソッドが SQL のどの句に対応するかの
+    分解表示も含む。includes と joins の違いによるクエリ数の変化も説明する。
+    '''
+    ...
+```
+
+---
+
 ## 4. 検出ルール一覧
 
 ### 共通型定義
@@ -401,9 +730,63 @@ class SeverityLevel(str, Enum):
 
 ---
 
-## 5. 実装方針
+## 5. ActiveRecord メソッド → SQL 変換ルール
 
-### 5.1 schema_audit の実装
+`query_preview` / `query_preview_snippet` が内部に持つ変換ルールテーブル:
+
+| ActiveRecord メソッド | SQL 句 | 備考 |
+|---|---|---|
+| `.where(col: val)` | `WHERE "table"."col" = val` | Hash 形式 |
+| `.where("col > ?", val)` | `WHERE (col > val)` | 文字列形式（プレースホルダ） |
+| `.where.not(col: val)` | `WHERE "table"."col" != val` | |
+| `.or(other_scope)` | `OR (...)` | |
+| `.order(:col)` | `ORDER BY "table"."col" ASC` | |
+| `.order(col: :desc)` | `ORDER BY "table"."col" DESC` | |
+| `.limit(n)` | `LIMIT n` | |
+| `.offset(n)` | `OFFSET n` | |
+| `.select(:col1, :col2)` | `SELECT "table"."col1", "table"."col2"` | |
+| `.pluck(:col)` | `SELECT "table"."col"` | ActiveRecord オブジェクトを作らない |
+| `.count` | `SELECT COUNT(*)` | |
+| `.sum(:col)` | `SELECT SUM("table"."col")` | |
+| `.average(:col)` | `SELECT AVG("table"."col")` | |
+| `.minimum(:col)` / `.maximum(:col)` | `SELECT MIN/MAX("table"."col")` | |
+| `.exists?` | `SELECT 1 ... LIMIT 1` | |
+| `.distinct` | `SELECT DISTINCT ...` | |
+| `.group(:col)` | `GROUP BY "table"."col"` | |
+| `.having(...)` | `HAVING ...` | |
+| `.joins(:assoc)` | `INNER JOIN ...` | association の外部キーから JOIN 条件を解決 |
+| `.left_joins(:assoc)` | `LEFT OUTER JOIN ...` | |
+| `.includes(:assoc)` | 別クエリ: `WHERE ... IN (...)` | preload 戦略（デフォルト） |
+| `.eager_load(:assoc)` | `LEFT OUTER JOIN ...` | 1クエリで eager load |
+| `.preload(:assoc)` | 別クエリ: `WHERE ... IN (...)` | 常に別クエリ |
+| `.find(id)` | `WHERE "table"."id" = id LIMIT 1` | |
+| `.find_by(col: val)` | `WHERE "table"."col" = val LIMIT 1` | |
+| `.first` / `.last` | `ORDER BY "id" ASC/DESC LIMIT 1` | |
+| `.destroy_all` | `SELECT` → 各レコードに `DELETE`（コールバックあり） | |
+| `.delete_all` | `DELETE FROM "table" WHERE ...`（コールバックなし） | |
+| `.update_all(col: val)` | `UPDATE "table" SET "col" = val WHERE ...` | |
+
+### enum の値解決
+
+- `where(status: :active)` → `introspect_model` の enum 定義から `:active` を `0` に変換
+- 変換元情報を `enum_resolutions` として出力に含める
+
+### 暗黙の条件
+
+- `default_scope` がある場合、全クエリに暗黙的に追加される条件として表示
+- `acts_as_paranoid` / `discard` 等の論理削除 Gem がある場合、`WHERE deleted_at IS NULL` が暗黙追加されることを検出して表示
+
+### インデックスの適用可否判定
+
+- 予測 SQL の WHERE 句と ORDER BY 句に対して、`introspect_model` のスキーマ情報（indexes）からインデックスが使えるかを推定
+- 複合インデックスの左端プレフィックスルールを考慮する
+- 使えるインデックスがない場合は `warning` を出す
+
+---
+
+## 6. 実装方針
+
+### 6.1 schema_audit の実装
 
 #### schema.rb のパース戦略
 
@@ -455,7 +838,7 @@ FOREIGN_KEY_PATTERN = re.compile(
 - `introspect_model` のキャッシュからバリデーション情報を取得（`IDX004`, `COL004` の検出に必要）
 - モデルファイルの mtime が変わった場合もキャッシュを無効化する（バリデーション追加でルール適用結果が変わるため）
 
-### 5.2 query_audit の実装
+### 6.2 query_audit の実装
 
 #### 静的解析アプローチ
 
@@ -529,17 +912,74 @@ SCOPE_DIRS = {
 
 ---
 
-## 6. ダッシュボードページ設計
+### 6.3 query_preview / query_preview_snippet の実装
 
-### 6.1 SQL 診断ページ
+#### モード1（スコープ一覧）: ハイブリッド
+
+- **スコープ定義の取得**: `introspect_model` のキャッシュから `scopes` セクションを取得
+- **スコープの Ruby コード取得**: 静的解析（`find_references` の grep 基盤）でスコープの定義本体を抽出
+- **SQL 予測**: Python 側で変換ルールテーブル（§5）を使って機械的に変換
+- **enum 解決**: `introspect_model` の `enums` セクションから値マッピングを取得
+- **インデックス判定**: `introspect_model` の `schema.indexes` から判定
+- **スコープチェーンの検出**: コードベースを grep して、対象モデルのスコープが実際にチェーンされている箇所を見つける
+
+#### モード2（コードスニペット）: 静的解析のみ
+
+- 入力の Ruby コードを正規表現でトークン化し、メソッドチェーンを分解
+- 各メソッドを変換ルールテーブル（§5）で SQL に変換
+- モデル名からテーブル名を推定（`User` → `users`、`OrderItem` → `order_items`）
+- `includes` / `joins` / `eager_load` は association 情報（`introspect_model` のキャッシュ）から JOIN 条件を解決
+
+#### ランタイム精度向上オプション
+
+`rails runner` で `Model.scope_name.to_sql` を実行すれば100%正確な SQL が得られる。静的解析で推測した SQL と突き合わせて精度を検証するモードも将来的に提供可能。ただし初期実装は静的解析のみ。
+
+#### メソッドチェーン分解の正規表現
+
+```python
+# メソッドチェーンの分解（トークン化）
+METHOD_CHAIN_PATTERN = re.compile(
+    r'\.(where|order|limit|offset|select|pluck|count|sum|average|'
+    r'minimum|maximum|exists\?|distinct|group|having|'
+    r'joins|left_joins|includes|eager_load|preload|'
+    r'find|find_by|first|last|'
+    r'destroy_all|delete_all|update_all|not)\b'
+    r'(\(.*?\))?',
+    re.DOTALL
+)
+
+# モデル名の抽出（チェーンの先頭）
+MODEL_NAME_PATTERN = re.compile(
+    r'^([A-Z][A-Za-z0-9]*(?:::[A-Z][A-Za-z0-9]*)*)\.'
+)
+
+# スコープ定義の抽出
+SCOPE_DEFINITION_PATTERN = re.compile(
+    r'scope\s+:(\w+)\s*,\s*->\s*(?:\((.*?)\))?\s*\{(.*?)\}',
+    re.DOTALL
+)
+```
+
+#### キャッシュ戦略
+
+- モード1の結果はモデル単位でキャッシュする
+- キャッシュキー: モデルファイルの mtime + `db/schema.rb` の mtime
+- スコープチェーン検索（`include_chain_examples=True`）の結果は、スコープ内の Ruby ファイルの最新 mtime をキャッシュキーとする
+- モード2はキャッシュしない（入力が任意のコードであるため）
+
+---
+
+## 7. ダッシュボードページ設計
+
+### 7.1 SQL 診断ページ
 
 | 項目 | 内容 |
 |---|---|
 | **URL** | `GET /sql` |
-| **目的** | スキーマ診断とクエリパターン診断の結果を統合表示する |
-| **使用 MCP ツール** | `rails_lens_schema_audit` + `rails_lens_query_audit` |
+| **目的** | スキーマ診断、クエリパターン診断、クエリプレビューの結果を統合表示する |
+| **使用 MCP ツール** | `rails_lens_schema_audit` + `rails_lens_query_audit` + `rails_lens_query_preview` + `rails_lens_query_preview_snippet` |
 
-### 6.2 表示内容
+### 7.2 表示内容
 
 #### サマリーカード（ページ上部）
 
@@ -562,8 +1002,9 @@ SCOPE_DIRS = {
 - **全て**: スキーマ + クエリの全問題を重大度順に表示
 - **スキーマ診断**: `schema_audit` の結果のみ
 - **クエリ診断**: `query_audit` の結果のみ
+- **クエリプレビュー**: `query_preview` / `query_preview_snippet` の結果（モデル選択 + コードスニペット入力）
 
-各タブ内ではさらに重大度フィルタ（critical / warning / info / all）で絞り込み可能。タブとフィルタはクエリパラメータ `?tab=schema&severity=critical` で URL に反映し、ブラウザの戻るボタンで前の状態に戻れるようにする。
+各タブ内ではさらに重大度フィルタ（critical / warning / info / all）で絞り込み可能（クエリプレビュータブでは重大度フィルタは非表示）。タブとフィルタはクエリパラメータ `?tab=schema&severity=critical` で URL に反映し、ブラウザの戻るボタンで前の状態に戻れるようにする。
 
 #### 問題カード
 
@@ -622,7 +1063,7 @@ change_column_null :users, :name, false
 
 「コピー」ボタンで一括コピーできるようにする（素の JavaScript の `navigator.clipboard.writeText`）。
 
-### 6.3 内部 API エンドポイント
+### 7.3 内部 API エンドポイント
 
 | メソッド | パス | 処理内容 | レスポンス形式 |
 |---|---|---|---|
@@ -632,9 +1073,11 @@ change_column_null :users, :name, false
 @app.get("/sql", response_class=HTMLResponse)
 async def sql_diagnostics(
     request: Request,
-    tab: str = "all",          # "all", "schema", "query"
+    tab: str = "all",          # "all", "schema", "query", "preview"
     severity: str = "all",     # "all", "critical", "warning", "info"
     table: str | None = None,  # 特定テーブルに絞る
+    model: str | None = None,  # クエリプレビュー用: 対象モデル名
+    code: str | None = None,   # クエリプレビュー用: コードスニペット入力
 ):
     schema_result = await _call_schema_audit(
         scope=table or "all",
@@ -666,6 +1109,18 @@ async def sql_diagnostics(
         if issue.get("suggestion") and issue["severity"] in ("critical", "warning")
     ]
 
+    # クエリプレビュータブ
+    preview_result = None
+    snippet_result = None
+    if tab == "preview" and model:
+        preview_result = await _call_query_preview(model_name=model)
+        if code:
+            snippet_result = await _call_query_preview_snippet(
+                code=code, model_name=model
+            )
+
+    models_list = await _call_list_models()
+
     return templates.TemplateResponse("sql.html", {
         "request": request,
         "tab": tab,
@@ -674,10 +1129,15 @@ async def sql_diagnostics(
         "schema_summary": schema_result.summary,
         "query_summary": query_result.summary,
         "migration_hints": migration_hints,
+        "models": models_list.models,
+        "current_model": model,
+        "preview_result": preview_result,
+        "snippet_result": snippet_result,
+        "code": code,
     })
 ```
 
-### 6.4 ナビゲーションへの追加
+### 7.4 ナビゲーションへの追加
 
 既存のナビゲーションに「SQL診断」リンクを追加する:
 
@@ -695,7 +1155,7 @@ async def sql_diagnostics(
 </nav>
 ```
 
-### 6.5 テンプレート構造
+### 7.5 テンプレート構造
 
 ```html
 {% extends "base.html" %}
@@ -725,16 +1185,200 @@ async def sql_diagnostics(
     <li><a href="?tab=all&severity={{ severity }}" {% if tab == 'all' %}aria-current="page"{% endif %}>全て</a></li>
     <li><a href="?tab=schema&severity={{ severity }}" {% if tab == 'schema' %}aria-current="page"{% endif %}>スキーマ診断</a></li>
     <li><a href="?tab=query&severity={{ severity }}" {% if tab == 'query' %}aria-current="page"{% endif %}>クエリ診断</a></li>
+    <li><a href="?tab=preview" {% if tab == 'preview' %}aria-current="page"{% endif %}>クエリプレビュー</a></li>
   </ul>
 </nav>
 
-{# 重大度フィルタ #}
+{# 重大度フィルタ（クエリプレビュータブでは非表示） #}
+{% if tab != 'preview' %}
 <fieldset role="group">
   <a href="?tab={{ tab }}&severity=all" role="button" {% if severity == 'all' %}class="contrast"{% else %}class="outline"{% endif %}>全て</a>
   <a href="?tab={{ tab }}&severity=critical" role="button" {% if severity == 'critical' %}class="contrast"{% else %}class="outline"{% endif %}>Critical</a>
   <a href="?tab={{ tab }}&severity=warning" role="button" {% if severity == 'warning' %}class="contrast"{% else %}class="outline"{% endif %}>Warning</a>
   <a href="?tab={{ tab }}&severity=info" role="button" {% if severity == 'info' %}class="contrast"{% else %}class="outline"{% endif %}>Info</a>
 </fieldset>
+{% endif %}
+
+{# クエリプレビュータブ #}
+{% if tab == 'preview' %}
+
+{# モデル選択セクション #}
+<form method="get" action="/sql">
+  <input type="hidden" name="tab" value="preview">
+  <select name="model" required>
+    <option value="">モデルを選択...</option>
+    {% for m in models %}
+    <option value="{{ m.name }}" {% if m.name == current_model %}selected{% endif %}>
+      {{ m.name }}
+    </option>
+    {% endfor %}
+  </select>
+  <button type="submit">プレビュー</button>
+</form>
+
+{% if preview_result %}
+
+{# 暗黙の条件警告 #}
+{% if preview_result.implicit_conditions %}
+<article aria-label="warning">
+  <header><strong>⚠️ このモデルには暗黙の条件があります</strong></header>
+  {% for cond in preview_result.implicit_conditions %}
+  <p>
+    <code>{{ cond.sql_fragment }}</code><br>
+    <small>{{ cond.source }} 由来。{{ cond.note }}</small>
+  </p>
+  {% endfor %}
+</article>
+{% endif %}
+
+{# 精度に関する注記 #}
+<p><small>この SQL は静的解析による予測です。実際のクエリは DB アダプタやバージョンによって異なる場合があります。</small></p>
+
+{# スコープ一覧テーブル #}
+<h3>スコープ一覧</h3>
+<table>
+  <thead>
+    <tr>
+      <th>スコープ名</th>
+      <th>Ruby 定義</th>
+      <th>予測 SQL</th>
+      <th>インデックス</th>
+      <th>状態</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for scope in preview_result.scopes %}
+    <tr {% if not scope.index_exists and scope.index_used is none %}class="warning-row"{% endif %}>
+      <td><code>{{ scope.name }}</code></td>
+      <td><code>{{ scope.ruby_definition }}</code></td>
+      <td><pre>{{ scope.predicted_sql }}</pre></td>
+      <td>
+        {% if scope.index_exists %}
+        ✅ <code>{{ scope.index_used }}</code>
+        {% else %}
+        ❌ なし
+        {% endif %}
+      </td>
+      <td>
+        {% if scope.warning %}🟡{% else %}🟢{% endif %}
+      </td>
+    </tr>
+    {% if scope.warning %}
+    <tr>
+      <td colspan="5"><small>⚠️ {{ scope.warning }}</small></td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </tbody>
+</table>
+
+{# association クエリセクション #}
+{% if preview_result.association_queries %}
+<h3>Association クエリ</h3>
+{% for aq in preview_result.association_queries %}
+<article>
+  <header>
+    <strong>{{ aq.access_pattern }}</strong>
+    <small>({{ aq.type }})</small>
+  </header>
+  <pre>{{ aq.predicted_sql }}</pre>
+  <footer>
+    {% if aq.index_exists %}
+    📌 <code>{{ aq.index_used }}</code> ✅
+    {% else %}
+    📌 インデックスなし ❌
+    {% endif %}
+  </footer>
+</article>
+{% endfor %}
+{% endif %}
+
+{# スコープチェーン例 #}
+{% if preview_result.scope_chains %}
+<h3>スコープチェーンの使用例（コードから検出）</h3>
+{% for chain in preview_result.scope_chains %}
+<article>
+  <header>
+    <code>{{ chain.ruby }}</code>
+    <small>{{ chain.found_in }}</small>
+  </header>
+  <pre>{{ chain.predicted_sql }}</pre>
+  <footer>
+    効率: {{ chain.efficiency }}
+    {% if chain.index_exists %} / 📌 <code>{{ chain.index_used }}</code> ✅{% endif %}
+  </footer>
+</article>
+{% endfor %}
+{% endif %}
+
+{# コードスニペット入力フォーム #}
+<details {% if snippet_result %}open{% endif %}>
+  <summary>カスタムクエリを入力して SQL を予測する</summary>
+  <form method="get" action="/sql">
+    <input type="hidden" name="tab" value="preview">
+    <input type="hidden" name="model" value="{{ current_model }}">
+    <textarea name="code" rows="3" placeholder="例: {{ current_model }}.where(status: :active).includes(:order_items)">{{ code or '' }}</textarea>
+    <button type="submit">SQL を予測</button>
+  </form>
+</details>
+
+{# コードスニペットの予測結果 #}
+{% if snippet_result %}
+<h3>コードスニペット予測結果</h3>
+<p><strong>入力:</strong> <code>{{ snippet_result.input_code }}</code></p>
+<p><small>発行クエリ数: {{ snippet_result.total_queries }}</small></p>
+
+{% for q in snippet_result.queries %}
+<article>
+  <header>
+    <strong>クエリ {{ q.query_number }}/{{ snippet_result.total_queries }}: {{ q.purpose }}</strong>
+  </header>
+  <pre>{{ q.predicted_sql }}</pre>
+
+  {# メソッド分解表示 #}
+  <table>
+    <thead><tr><th>メソッド</th><th>SQL 句</th></tr></thead>
+    <tbody>
+    {% for mb in q.method_breakdown %}
+    <tr>
+      <td><code>{{ mb.method }}</code></td>
+      <td><code>{{ mb.sql_fragment }}</code></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  {% if q.note %}
+  <p><small>📝 {{ q.note }}</small></p>
+  {% endif %}
+
+  {% if q.alternative %}
+  <details>
+    <summary>{{ q.alternative.method }}</summary>
+    <pre>{{ q.alternative.predicted_sql }}</pre>
+    <p><small>{{ q.alternative.difference }}</small></p>
+  </details>
+  {% endif %}
+</article>
+{% endfor %}
+
+{% if snippet_result.select_star_warning %}
+<p>⚠️ {{ snippet_result.select_star_warning }}</p>
+{% endif %}
+
+{% if snippet_result.recommendations %}
+<h4>推奨事項</h4>
+<ul>
+{% for rec in snippet_result.recommendations %}
+  <li>{{ rec }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+{% endif %}
+
+{% endif %}{# end if preview_result #}
+
+{% else %}{# 全て / スキーマ診断 / クエリ診断タブ #}
 
 {# 問題カード一覧 #}
 {% for issue in all_issues %}
@@ -772,19 +1416,24 @@ async def sql_diagnostics(
   </footer>
 </article>
 {% endif %}
+
+{% endif %}{# end tab switch #}
 {% endblock %}
 ```
 
 ---
 
-## 7. 既存ツールとの連携
+## 8. 既存ツールとの連携
 
 | 既存ツール | 連携方法 |
 |---|---|
-| `introspect_model` | スキーマ情報（columns, indexes, foreign_keys）とバリデーション情報をキャッシュから取得し、`IDX001`（外部キーインデックス）や `COL004`（NOT NULL 不一致）の突き合わせに使用 |
-| `find_references` | `query_audit` の grep 処理で `find_references` の内部実装（`analyzers/grep_search.py`）を再利用 |
+| `introspect_model` | スキーマ情報（columns, indexes, foreign_keys）とバリデーション情報をキャッシュから取得し、`IDX001`（外部キーインデックス）や `COL004`（NOT NULL 不一致）の突き合わせに使用。`query_preview` では enum 値マッピング、スコープ定義、association 情報、スキーマ（indexes, columns）をキャッシュから取得 |
+| `find_references` | `query_audit` の grep 処理で `find_references` の内部実装（`analyzers/grep_search.py`）を再利用。`query_preview` ではスコープチェーンの検出に使用 |
 | `n_plus_one_detector` | `PERF005`（N+1 兆候）の検出ロジックの一部を共有。ただし scope が異なる（`n_plus_one_detector` はコントローラ起点、`query_audit` は全ファイル対象） |
 | `redundancy_detector` | `PERF004`（count の繰り返し）は `redundancy_detector` の検出対象とも重なる。両ツールが同じ問題を報告した場合、ダッシュボード側で重複排除する |
+| `schema_audit` | `query_preview` のインデックス不足の警告と連動。`query_preview` で「このクエリにはインデックスがない」と指摘した箇所は `schema_audit` でも同様の指摘がある |
+| `query_audit` | `query_preview` の recommendations として `PERF002`（SELECT *）や `PERF007`（非効率な存在確認）の検出と連動 |
+| `gem_introspect` | `query_preview` で `default_scope` や論理削除 Gem（`acts_as_paranoid` / `discard`）による暗黙条件の検出に使用 |
 
 ### 重複排除の方針
 
@@ -795,19 +1444,21 @@ async def sql_diagnostics(
 
 ---
 
-## 8. ディレクトリ構造
+## 9. ディレクトリ構造
 
 ```
 src/rails_lens/
 ├── analyzers/
 │   ├── schema_audit.py      # db/schema.rb の解析と診断ルール
-│   └── query_audit.py       # Ruby ソースの静的解析と診断ルール
+│   ├── query_audit.py       # Ruby ソースの静的解析と診断ルール
+│   └── query_preview.py     # ActiveRecord メソッドチェーン → SQL 変換エンジン
 ├── tools/
 │   ├── schema_audit.py      # MCP ツール定義（register パターン）
-│   └── query_audit.py       # MCP ツール定義（register パターン）
+│   ├── query_audit.py       # MCP ツール定義（register パターン）
+│   └── query_preview.py     # MCP ツール定義（query_preview + query_preview_snippet）
 └── web/
     └── templates/
-        └── sql.html          # SQL診断ダッシュボードページ
+        └── sql.html          # SQL診断ダッシュボードページ（クエリプレビュータブ含む）
 
 ruby/
 └── dump_schema_raw.rb        # schema.rb の内容をそのまま JSON 化（ランタイム解析が必要な場合のフォールバック）
@@ -819,20 +1470,24 @@ ruby/
 |---|---|
 | `analyzers/schema_audit.py` | `db/schema.rb` の正規表現パース、テーブル/カラム/インデックス情報の構造化、診断ルールの適用 |
 | `analyzers/query_audit.py` | Ruby ソースファイルの grep 検索、正規表現パターンマッチング、診断ルールの適用 |
+| `analyzers/query_preview.py` | ActiveRecord メソッドチェーンの正規表現トークン化、変換ルールテーブル（§5）による SQL 生成、enum 値解決、暗黙条件検出、インデックス適用可否判定 |
 | `tools/schema_audit.py` | `register(mcp, get_deps)` パターンでの MCP ツール登録、`SchemaAuditInput` / `SchemaAuditOutput` の定義 |
 | `tools/query_audit.py` | `register(mcp, get_deps)` パターンでの MCP ツール登録、`QueryAuditInput` / `QueryAuditOutput` の定義 |
-| `web/templates/sql.html` | Jinja2 テンプレート、PicoCSS ベースの HTML |
+| `tools/query_preview.py` | `register(mcp, get_deps)` パターンでの MCP ツール登録、`QueryPreviewInput` / `QueryPreviewOutput` / `QueryPreviewSnippetInput` / `QueryPreviewSnippetOutput` の定義 |
+| `web/templates/sql.html` | Jinja2 テンプレート、PicoCSS ベースの HTML（クエリプレビュータブ含む） |
 | `ruby/dump_schema_raw.rb` | `db/schema.rb` を Ruby の DSL として評価し、構造化データとして JSON 出力するフォールバックスクリプト |
 
 ---
 
-## 9. 実装の難易度と工数
+## 10. 実装の難易度と工数
 
 | ツール | 難易度 | 工数 | 備考 |
 |---|---|---|---|
 | `schema_audit` | M | 中 | `schema.rb` の正規表現パースが主な工数。ルール自体はシンプル |
 | `query_audit` | M | 中 | grep パターンの網羅性と誤検知抑制のバランスが肝 |
-| ダッシュボードページ | S | 小 | 既存パターン（PicoCSS + Jinja2）の踏襲で済む |
+| `query_preview` | L | 大 | メソッドチェーン分解・SQL 変換ルール・enum 解決・インデックス判定と多岐にわたる。`introspect_model` のキャッシュとの連携が複雑 |
+| `query_preview_snippet` | M | 中 | `query_preview` の変換エンジンを再利用。入力パースとメソッド分解が主な工数 |
+| ダッシュボードページ | S | 小 | 既存パターン（PicoCSS + Jinja2）の踏襲で済む。クエリプレビュータブの追加分のみ |
 
 ### 実装フェーズ
 
@@ -843,10 +1498,12 @@ ruby/
 | Phase 3 | 残りのルール追加 + `introspect_model` 連携ルール（`IDX004`, `COL004`） | ルール追加、キャッシュ連携 |
 | Phase 4 | ダッシュボードページ + マイグレーションヒント生成 | `web/templates/sql.html`, エンドポイント追加 |
 | Phase 5 | 誤検知抑制（`rails-lens:disable` コメント対応）+ テスト | テストケース、ドキュメント |
+| Phase 6 | `query_preview` の基本実装（変換ルールテーブル、スコープ一覧、enum 解決、インデックス判定） | `analyzers/query_preview.py`, `tools/query_preview.py` |
+| Phase 7 | `query_preview_snippet` の実装 + スコープチェーン検出 + ダッシュボードのクエリプレビュータブ | `tools/query_preview.py` 拡張, `sql.html` 拡張 |
 
 ---
 
-## 10. 設計上の注意点
+## 11. 設計上の注意点
 
 ### structure.sql への対応
 
@@ -870,8 +1527,27 @@ ruby/
 - 診断結果は `CacheManager` を使用してキャッシュする
 - `schema_audit`: `db/schema.rb` の mtime をキャッシュキーとする
 - `query_audit`: スコープ内の Ruby ファイルの最新 mtime をキャッシュキーとする
+- `query_preview`: モデルファイルの mtime + `db/schema.rb` の mtime をキャッシュキーとする
 - ソースファイルの mtime が変わらない限りキャッシュから返す
 
 ### AI による自発的な呼び出し
 
 AI が `schema_audit` を自発的に呼ぶよう、ツールの description に「マイグレーションを作成する前に必ずこのツールでスキーマの問題を確認すること」と明記する（ツール定義の docstring に記載済み）。
+
+### 予測 SQL の精度
+
+- 予測 SQL は100%正確ではないことを明示する。出力に `"accuracy": "predicted (static analysis)"` を含め、ダッシュボードでも「この SQL は静的解析による予測です。実際のクエリは DB アダプタやバージョンによって異なる場合があります」と注記する
+- `db/schema.rb` が MySQL 用か PostgreSQL 用かでクォーティングが異なる（MySQL: バッククォート、PostgreSQL: ダブルクォート）。`schema.rb` の `ActiveRecord::Schema` 定義からアダプタを推定する。不明な場合は PostgreSQL 形式（ダブルクォート）をデフォルトとする
+
+### includes の挙動
+
+- `includes` の挙動は Rails のバージョンと条件によって `preload`（2クエリ）か `eager_load`（1クエリ JOIN）に内部的に切り替わる。予測では `preload` 戦略（2クエリ）をデフォルトとし、JOIN が必要な条件（`.where` で関連テーブルのカラムを参照している場合）では `eager_load` 戦略に切り替えることを注記する
+
+### コードスニペット入力の安全性
+
+- コードスニペット入力（モード2）は任意の Ruby コードを受け取るが、実行はしない。正規表現でメソッドチェーンを分解するだけ
+- 複雑な制御構文（if 分岐、ループ内のクエリ等）は解析対象外とし、「このコードは複雑すぎて静的解析では予測できません」と返す
+
+### スコープチェーン検索のパフォーマンス
+
+- スコープチェーンの例（`include_chain_examples`）は `find_references` の grep で対象モデルのスコープ呼び出しを検索して構築する。大規模コードベースでは検索に時間がかかるため、キャッシュ必須
