@@ -1,20 +1,29 @@
-"""rails_lens_screen_map ツール（Phase H-2: screen_to_source モード）"""
+"""rails_lens_screen_map ツール（Phase H-2/H-3/H-4: 双方向マッピング + full_inventory）"""
 from __future__ import annotations
 
 import contextlib
 import re
 from collections.abc import Callable
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 
+from rails_lens.analyzers.api_detector import (
+    detect_serializer,
+    is_api_controller,
+    is_json_only_action,
+)
+from rails_lens.analyzers.inventory_formatter import InventoryFormatter
 from rails_lens.analyzers.reverse_index_builder import (
     ReverseIndex,
     ReverseIndexBuilder,
+    _build_controller_action,
+    _is_api_route,
 )
 from rails_lens.analyzers.screen_name_resolver import ScreenNameResolver, parse_controller_action
 from rails_lens.analyzers.template_parser import TemplateParser
@@ -209,6 +218,43 @@ class SourceToScreensOutput(BaseModel):
     methods: list[MethodScreenMapping] = Field(default_factory=list)
     total_screen_count: int | str = 0
     impact_level: str = "low"
+    _metadata: dict[str, str] | None = None
+
+
+# ---- full_inventory 出力モデル ----
+
+
+class ScreenEntry(BaseModel):
+    screen_name: str
+    url_pattern: str
+    http_method: str
+    controller_action: str
+    template: str | None = None
+    partial_count: int = 0
+    models: list[str] = Field(default_factory=list)
+    is_api: bool = False
+    serializer: str | None = None
+
+
+class SharedPartialEntry(BaseModel):
+    file: str
+    screen_count: int | str = 0
+    impact_level: str = "low"
+
+
+class ScreenGroup(BaseModel):
+    group_name: str
+    screens: list[ScreenEntry] = Field(default_factory=list)
+
+
+class FullInventoryOutput(BaseModel):
+    generated_at: str
+    total_screen_count: int = 0
+    web_screen_count: int = 0
+    api_endpoint_count: int = 0
+    groups: list[ScreenGroup] = Field(default_factory=list)
+    shared_partials: list[SharedPartialEntry] = Field(default_factory=list)
+    markdown: str | None = None
     _metadata: dict[str, str] | None = None
 
 
@@ -1029,6 +1075,436 @@ async def _resolve_from_url(url: str, bridge: Any) -> str | None:
 
 
 # ============================================================
+# full_inventory 実装
+# ============================================================
+
+# グループ名推定（日本語）
+_GROUP_NAME_JA: dict[str, str] = {
+    "admin": "管理画面",
+    "api": "API",
+    "users": "ユーザー管理",
+    "orders": "注文管理",
+    "products": "商品管理",
+    "companies": "企業管理",
+    "posts": "投稿管理",
+    "comments": "コメント管理",
+    "sessions": "セッション管理",
+    "passwords": "パスワード管理",
+    "registrations": "ユーザー登録",
+    "confirmations": "確認メール管理",
+    "dashboard": "ダッシュボード",
+    "dashboards": "ダッシュボード",
+    "settings": "設定",
+    "profiles": "プロフィール管理",
+    "notifications": "通知管理",
+    "messages": "メッセージ管理",
+    "payments": "支払い管理",
+    "items": "アイテム管理",
+    "categories": "カテゴリ管理",
+    "tags": "タグ管理",
+    "reports": "レポート",
+    "searches": "検索",
+}
+
+
+def _resolve_group_name(namespace: str, resource: str, locale: str) -> str:
+    """名前空間・リソースからグループ名を生成する。"""
+    ns_lower = namespace.lower() if namespace else ""
+    res_lower = resource.lower() if resource else ""
+
+    if locale == "ja":
+        if ns_lower == "admin":
+            return "管理画面"
+        if ns_lower in ("api", "api::v1", "api::v2"):
+            # バージョン抽出
+            ver_m = re.search(r"v(\d+)", ns_lower)
+            ver = f" v{ver_m.group(1)}" if ver_m else ""
+            return f"API{ver}"
+        if ns_lower:
+            return _GROUP_NAME_JA.get(ns_lower, f"{ns_lower.capitalize()} 管理")
+        return _GROUP_NAME_JA.get(res_lower, f"{resource.replace('_', ' ').title()} 管理")
+    else:
+        if ns_lower == "admin":
+            return "Admin"
+        if ns_lower.startswith("api"):
+            ver_m = re.search(r"v(\d+)", ns_lower)
+            ver = f" v{ver_m.group(1)}" if ver_m else ""
+            return f"API{ver}"
+        if ns_lower:
+            return ns_lower.replace("_", " ").title()
+        return resource.replace("_", " ").title()
+
+
+def _controller_to_namespace_resource(controller_action: str) -> tuple[str, str]:
+    """コントローラ#アクションから (namespace, resource) を抽出する。
+
+    例:
+        "UsersController#index" → ("", "users")
+        "Admin::UsersController#index" → ("Admin", "users")
+        "Api::V1::UsersController#index" → ("Api::V1", "users")
+    """
+    resource, _action, namespaces = parse_controller_action(controller_action)
+    namespace = "::".join(namespaces) if namespaces else ""
+    return namespace, resource
+
+
+def _group_screens(
+    screens: list[ScreenEntry],
+    group_by: str,
+    locale: str,
+) -> list[ScreenGroup]:
+    """group_by に応じてスクリーンをグループ化する。"""
+    if group_by == "flat":
+        return [ScreenGroup(group_name="全画面" if locale == "ja" else "All", screens=screens)]
+
+    if group_by == "resource":
+        groups_map: dict[str, list[ScreenEntry]] = {}
+        for screen in screens:
+            _ns, resource = _controller_to_namespace_resource(screen.controller_action)
+            key = resource
+            groups_map.setdefault(key, []).append(screen)
+        return [
+            ScreenGroup(
+                group_name=_resolve_group_name("", key, locale),
+                screens=slist,
+            )
+            for key, slist in sorted(groups_map.items())
+        ]
+
+    # default: namespace
+    groups_map_ns: dict[str, list[ScreenEntry]] = {}
+    for screen in screens:
+        ns, resource = _controller_to_namespace_resource(screen.controller_action)
+        # APIはis_apiフラグで別扱いせず、名前空間でグループ
+        key = ns if ns else resource
+        groups_map_ns.setdefault(key, []).append(screen)
+
+    return [
+        ScreenGroup(
+            group_name=_resolve_group_name(
+                key if "::" not in key else key.split("::")[0], key, locale
+            ),
+            screens=slist,
+        )
+        for key, slist in sorted(groups_map_ns.items())
+    ]
+
+
+def _collect_shared_partials(
+    partial_usage: dict[str, list[str]],
+) -> list[SharedPartialEntry]:
+    """パーシャル使用状況から SharedPartialEntry リストを生成する。
+
+    partial_usage: {partial_file: [screen_controller_action, ...]}
+    """
+    result: list[SharedPartialEntry] = []
+    for partial_file, screens in sorted(partial_usage.items()):
+        count: int | str = len(screens)
+        impact = _determine_impact_level(count)
+        result.append(
+            SharedPartialEntry(file=partial_file, screen_count=count, impact_level=impact)
+        )
+    # layout経由のパーシャルは "all (layout)"
+    return result
+
+
+def _build_screen_entry_from_mapping(
+    mapping: dict[str, Any],
+    config: Any,
+    resolver: ViewResolver,
+    parser: TemplateParser,
+    name_resolver: ScreenNameResolver,
+    locale: str,
+) -> ScreenEntry | None:
+    """mapping 辞書から ScreenEntry を構築する。"""
+    ctrl = mapping.get("controller", "")
+    action = mapping.get("action", "")
+    if not ctrl or not action:
+        return None
+
+    url_pattern = mapping.get("path", f"/{ctrl}/{action}")
+    http_method = mapping.get("verb", "GET")
+    controller_action = _build_controller_action(ctrl, action)
+    i18n_keys: dict[str, str] = mapping.get("i18n_title_keys", {}) or {}
+    conventional_template = mapping.get("conventional_template", "")
+    explicit_render = mapping.get("explicit_render")
+
+    # is_api 判定
+    project_root = Path(config.rails_project_path)
+    is_api = bool(
+        _is_api_route(mapping)
+        or is_api_controller(ctrl, project_root)
+        or is_json_only_action(ctrl, action, project_root)
+    )
+
+    # テンプレート解決
+    template_rel: str | None = None
+    if not is_api:
+        if explicit_render and "/" in explicit_render:
+            parts = explicit_render.split("/", 1)
+            template_rel = resolver.find_template(parts[0], parts[1])
+        if template_rel is None and conventional_template:
+            parts = conventional_template.split("/", 1)
+            if len(parts) == 2:
+                template_rel = resolver.find_template(parts[0], parts[1])
+        if template_rel is None:
+            template_rel = resolver.find_template(ctrl, action)
+
+    # 画面名推定
+    screen_name, _source = name_resolver.resolve(
+        controller_action,
+        i18n_keys=i18n_keys,
+        template_path=template_rel,
+        locale=locale,
+    )
+
+    # パーシャル数
+    partial_count = 0
+    partial_files: list[str] = []
+    if template_rel:
+        with contextlib.suppress(Exception):
+            nodes = resolver.resolve_partials(template_rel)
+            partial_files = [n.file for n in nodes if n.file]
+            partial_count = len(partial_files)
+
+    # モデル参照
+    models: list[str] = []
+    if template_rel:
+        with contextlib.suppress(Exception):
+            analysis = parser.parse(template_rel)
+            seen_models: set[str] = set()
+            for ref in analysis.model_refs:
+                model_name = _variable_to_model_name(ref.variable)
+                if model_name not in seen_models:
+                    seen_models.add(model_name)
+                    models.append(model_name)
+
+    # シリアライザ（APIの場合）
+    serializer: str | None = None
+    if is_api:
+        with contextlib.suppress(Exception):
+            serializer = detect_serializer(ctrl, action, project_root)
+
+    return ScreenEntry(
+        screen_name=screen_name,
+        url_pattern=url_pattern,
+        http_method=http_method,
+        controller_action=controller_action,
+        template=template_rel,
+        partial_count=partial_count,
+        models=models,
+        is_api=is_api,
+        serializer=serializer,
+    )
+
+
+def _fallback_full_inventory(
+    config: Any, locale: str, group_by: str, include_api: bool
+) -> FullInventoryOutput:
+    """bridge 失敗時のファイルベースフォールバック。
+
+    app/views 配下の非パーシャルビューをスキャンして ScreenEntry を構築する。
+    """
+    project_root = Path(config.rails_project_path)
+    views_dir = project_root / "app" / "views"
+    generated_at = datetime.now(tz=UTC).isoformat()
+
+    resolver = ViewResolver(config)
+    parser = TemplateParser(config)
+    name_resolver = ScreenNameResolver(config)
+
+    screens: list[ScreenEntry] = []
+    partial_usage: dict[str, list[str]] = {}
+
+    if views_dir.is_dir():
+        for tpl in sorted(views_dir.rglob("*")):
+            if not tpl.is_file():
+                continue
+            if tpl.suffix not in {".erb", ".haml", ".slim"}:
+                continue
+            if tpl.name.startswith("_"):
+                continue  # パーシャルはスキップ
+
+            try:
+                rel = str(tpl.relative_to(project_root))
+            except ValueError:
+                rel = str(tpl)
+
+            # レイアウトはスキップ
+            if "views/layouts" in rel.replace("\\", "/"):
+                continue
+
+            # controller_action を推定
+            parts = rel.replace("\\", "/").split("/")
+            if len(parts) < 4 or parts[0] != "app" or parts[1] != "views":
+                continue
+
+            # action: ファイル名から拡張子除去
+            filename = parts[-1]
+            action = re.sub(r"\..+$", "", filename)
+            # コントローラパス
+            ctrl_parts = parts[2:-1]
+            ctrl = "/".join(ctrl_parts)
+            controller_action = _build_controller_action(ctrl, action)
+
+            # HTTP method guess from action name
+            method_map = {
+                "index": "GET", "show": "GET", "new": "GET", "edit": "GET",
+                "create": "POST", "update": "PATCH", "destroy": "DELETE",
+            }
+            http_method = method_map.get(action, "GET")
+            url_parts = [p.replace("_", "-") for p in ctrl_parts]
+            url_pattern = "/" + "/".join(url_parts)
+
+            screen_name, _ = name_resolver.resolve(
+                controller_action, template_path=rel, locale=locale
+            )
+
+            # パーシャル解決
+            partial_count = 0
+            models: list[str] = []
+            with contextlib.suppress(Exception):
+                nodes = resolver.resolve_partials(rel)
+                partial_count = len([n for n in nodes if n.file])
+                for node in nodes:
+                    if node.file:
+                        partial_usage.setdefault(node.file, []).append(controller_action)
+
+            with contextlib.suppress(Exception):
+                analysis = parser.parse(rel)
+                seen: set[str] = set()
+                for ref in analysis.model_refs:
+                    m = _variable_to_model_name(ref.variable)
+                    if m not in seen:
+                        seen.add(m)
+                        models.append(m)
+
+            entry = ScreenEntry(
+                screen_name=screen_name,
+                url_pattern=url_pattern,
+                http_method=http_method,
+                controller_action=controller_action,
+                template=rel,
+                partial_count=partial_count,
+                models=models,
+                is_api=False,
+            )
+            screens.append(entry)
+
+    if not include_api:
+        screens = [s for s in screens if not s.is_api]
+
+    groups = _group_screens(screens, group_by, locale)
+    web_count = sum(1 for s in screens if not s.is_api)
+    api_count = sum(1 for s in screens if s.is_api)
+
+    # 共有パーシャル（2画面以上で使用）
+    shared_partials = _collect_shared_partials(
+        {k: v for k, v in partial_usage.items() if len(v) >= 2}
+    )
+
+    output = FullInventoryOutput(
+        generated_at=generated_at,
+        total_screen_count=len(screens),
+        web_screen_count=web_count,
+        api_endpoint_count=api_count,
+        groups=groups,
+        shared_partials=shared_partials,
+        markdown=None,
+    )
+    output._metadata = {"source": "file_analysis", "note": "Rails runner unavailable"}
+    return output
+
+
+async def _full_inventory_impl(
+    params: ScreenMapInput,
+    bridge: Any,
+    config: Any,
+    ctx: Context[Any, Any, Any] | None = None,
+) -> FullInventoryOutput:
+    """full_inventory モードのメイン処理。"""
+    locale = params.locale or "ja"
+    group_by = (params.group_by or ScreenMapGroupBy.NAMESPACE).value
+    include_api = params.include_api if params.include_api is not None else True
+    generated_at = datetime.now(tz=UTC).isoformat()
+
+    resolver = ViewResolver(config)
+    parser = TemplateParser(config)
+    name_resolver = ScreenNameResolver(config)
+
+    # bridge から全ルーティング取得
+    mappings: list[dict[str, Any]] = []
+    is_fallback = False
+    try:
+        data = await bridge.execute("dump_view_mapping.rb", args=["all"])
+        mappings = data.get("mappings", [])
+    except (RailsRunnerExecutionError, RailsRunnerTimeoutError, FileNotFoundError, OSError):
+        is_fallback = True
+
+    if is_fallback or not mappings:
+        output = _fallback_full_inventory(config, locale, group_by, include_api)
+        if params.format == "markdown":
+            formatter = InventoryFormatter()
+            output.markdown = formatter.format(output)
+        return output
+
+    # ---- bridge 成功: ルーティングを処理 ----
+    total = len(mappings)
+    screens: list[ScreenEntry] = []
+    partial_usage: dict[str, list[str]] = {}
+
+    for i, mapping in enumerate(mappings):
+        if ctx is not None:
+            await ctx.report_progress(i, total, f"画面を解析中: {i + 1}/{total}")
+
+        entry = _build_screen_entry_from_mapping(
+            mapping, config, resolver, parser, name_resolver, locale
+        )
+        if entry is None:
+            continue
+
+        # パーシャル使用状況集計
+        if entry.template:
+            with contextlib.suppress(Exception):
+                nodes = resolver.resolve_partials(entry.template)
+                for node in nodes:
+                    if node.file:
+                        partial_usage.setdefault(node.file, []).append(entry.controller_action)
+
+        screens.append(entry)
+
+    if ctx is not None:
+        await ctx.report_progress(total, total, "グルーピング・整形中...")
+
+    if not include_api:
+        screens = [s for s in screens if not s.is_api]
+
+    groups = _group_screens(screens, group_by, locale)
+    web_count = sum(1 for s in screens if not s.is_api)
+    api_count = sum(1 for s in screens if s.is_api)
+
+    # 共有パーシャル（2画面以上）
+    shared_partials_raw = {k: v for k, v in partial_usage.items() if len(v) >= 2}
+    shared_partials = _collect_shared_partials(shared_partials_raw)
+
+    output = FullInventoryOutput(
+        generated_at=generated_at,
+        total_screen_count=len(screens),
+        web_screen_count=web_count,
+        api_endpoint_count=api_count,
+        groups=groups,
+        shared_partials=shared_partials,
+        markdown=None,
+    )
+
+    if params.format == "markdown":
+        formatter = InventoryFormatter()
+        output.markdown = formatter.format(output)
+
+    return output
+
+
+# ============================================================
 # MCP ツール登録
 # ============================================================
 
@@ -1043,7 +1519,7 @@ def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
             openWorldHint=False,
         ),
     )
-    async def screen_map(params: ScreenMapInput) -> str:
+    async def screen_map(params: ScreenMapInput, ctx: Context[Any, Any, Any]) -> str:
         """画面とソースコードの双方向マッピングを提供する。
 
         3つのモードがある:
@@ -1098,8 +1574,20 @@ def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
                     code="RUNTIME_ERROR", message=str(e)
                 ).model_dump_json(indent=2)
 
-        # full_inventory は Phase H-4 以降で実装予定
+        if params.mode == ScreenMapMode.FULL_INVENTORY:
+            try:
+                inv_output = await _full_inventory_impl(params, bridge, config, ctx)
+                return inv_output.model_dump_json(indent=2, exclude={"_metadata"})
+            except ValueError as e:
+                return ErrorResponse(
+                    code="INVALID_INPUT", message=str(e)
+                ).model_dump_json(indent=2)
+            except Exception as e:
+                return ErrorResponse(
+                    code="RUNTIME_ERROR", message=str(e)
+                ).model_dump_json(indent=2)
+
         return ErrorResponse(
             code="NOT_IMPLEMENTED",
-            message=f"モード '{params.mode.value}' は現在実装中です",
+            message=f"モード '{params.mode.value}' は未対応です",
         ).model_dump_json(indent=2)
