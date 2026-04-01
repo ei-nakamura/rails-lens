@@ -12,6 +12,10 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 
+from rails_lens.analyzers.reverse_index_builder import (
+    ReverseIndex,
+    ReverseIndexBuilder,
+)
 from rails_lens.analyzers.screen_name_resolver import ScreenNameResolver, parse_controller_action
 from rails_lens.analyzers.template_parser import TemplateParser
 from rails_lens.analyzers.view_resolver import PartialNode, ViewResolver
@@ -171,6 +175,40 @@ class ScreenToSourceOutput(BaseModel):
     i18n_keys: list[I18nKeyUsage] = Field(default_factory=list)
     hardcoded_text: list[HardcodedText] = Field(default_factory=list)
     assets: AssetInfo = Field(default_factory=AssetInfo)
+    _metadata: dict[str, str] | None = None
+
+
+# ---- source_to_screens 出力モデル ----
+
+
+class ScreenReference(BaseModel):
+    screen_name: str
+    controller_action: str | None = None
+    url_pattern: str | None = None
+    included_via: str | None = None
+    inclusion_chain: list[str] = Field(default_factory=list)
+    via_partial: bool = False
+    is_api: bool = False
+    note: str = ""
+    attributes_used: list[str] = Field(default_factory=list)
+    methods_used: list[str] = Field(default_factory=list)
+
+
+class MethodScreenMapping(BaseModel):
+    method_name: str
+    line: int
+    used_in_screens: list[ScreenReference] = Field(default_factory=list)
+    total_screen_count: int = 0
+    impact_level: str = "low"
+
+
+class SourceToScreensOutput(BaseModel):
+    source_file: str
+    source_type: str  # "partial", "helper", "model", "decorator", "presenter"
+    used_in_screens: list[ScreenReference] = Field(default_factory=list)
+    methods: list[MethodScreenMapping] = Field(default_factory=list)
+    total_screen_count: int | str = 0
+    impact_level: str = "low"
     _metadata: dict[str, str] | None = None
 
 
@@ -682,6 +720,291 @@ async def _screen_to_source_impl(
     )
 
 
+# ============================================================
+# source_to_screens 実装
+# ============================================================
+
+
+def _determine_source_type(file_path: str) -> str:
+    """ファイルパスからソースタイプを判定する。"""
+    fp = file_path.replace("\\", "/")
+    if "/app/decorators/" in fp or fp.startswith("app/decorators/"):
+        return "decorator"
+    if "/app/presenters/" in fp or fp.startswith("app/presenters/"):
+        return "presenter"
+    if "/app/helpers/" in fp or fp.startswith("app/helpers/"):
+        return "helper"
+    if "/app/models/" in fp or fp.startswith("app/models/"):
+        return "model"
+    # ビューファイル: パーシャルは _ で始まる
+    import os
+    basename = os.path.basename(fp)
+    if basename.startswith("_"):
+        return "partial"
+    # 一般テンプレート（非パーシャルビュー）もパーシャルとして扱う
+    if "/app/views/" in fp or fp.startswith("app/views/"):
+        return "partial"
+    return "partial"
+
+
+def _determine_impact_level(count: int | str, via_layout: bool = False) -> str:
+    """impact_level を判定する。"""
+    if via_layout:
+        return "critical"
+    if isinstance(count, str):
+        return "critical"
+    if count >= 10:
+        return "critical"
+    if count >= 5:
+        return "high"
+    if count >= 2:
+        return "moderate"
+    return "low"
+
+
+def _screen_refs_from_index(refs: list[dict[str, Any]]) -> list[ScreenReference]:
+    """逆引きインデックスの refs リストを ScreenReference リストに変換する。"""
+    result = []
+    for r in refs:
+        result.append(ScreenReference(
+            screen_name=r.get("screen_name", ""),
+            controller_action=r.get("controller_action"),
+            url_pattern=r.get("url_pattern"),
+            included_via=r.get("included_via"),
+            inclusion_chain=[r["included_via"]] if r.get("included_via") else [],
+            via_partial=r.get("via_partial", False),
+            is_api=r.get("is_api", False),
+            note=r.get("note", ""),
+            attributes_used=r.get("attributes_used", []),
+            methods_used=r.get("methods_used", []),
+        ))
+    return result
+
+
+async def _build_reverse_index(bridge: Any, config: Any) -> ReverseIndex:
+    """bridge 経由で全ルーティングを取得し、逆引きインデックスを構築する。"""
+    builder = ReverseIndexBuilder(config)
+
+    # キャッシュ確認
+    cached = builder.load_cache()
+    if cached is not None:
+        return cached
+
+    # bridge から全ルーティング取得
+    data = await bridge.execute("dump_view_mapping.rb", args=["all"])
+    mappings = data.get("mappings", [])
+
+    index = builder.build_from_mappings(mappings)
+    builder.save_cache(index)
+    return index
+
+
+async def _source_to_screens_impl(
+    params: ScreenMapInput,
+    bridge: Any,
+    config: Any,
+) -> SourceToScreensOutput:
+    """source_to_screens モードのメイン処理。"""
+    file_path = params.file_path or ""
+    source_type = _determine_source_type(file_path)
+    builder = ReverseIndexBuilder(config)
+
+    # Bridge でインデックス構築を試みる
+    is_fallback = False
+    index: ReverseIndex | None = None
+    try:
+        index = await _build_reverse_index(bridge, config)
+    except (RailsRunnerExecutionError, RailsRunnerTimeoutError, FileNotFoundError, OSError):
+        is_fallback = True
+
+    if is_fallback or index is None:
+        return _fallback_source_to_screens(file_path, source_type, builder)
+
+    return _source_to_screens_from_index(file_path, source_type, index, config, params)
+
+
+def _source_to_screens_from_index(
+    file_path: str,
+    source_type: str,
+    index: ReverseIndex,
+    config: Any,
+    params: ScreenMapInput,
+) -> SourceToScreensOutput:
+    """逆引きインデックスから SourceToScreensOutput を組み立てる。"""
+    project_root = Path(config.rails_project_path)
+
+    if source_type == "partial":
+        # レイアウト経由かチェック
+        layout_refs = index.layouts.get(file_path, [])
+        if layout_refs:
+            screens = _screen_refs_from_index(layout_refs)
+            total: int | str = "all (layout)"
+            impact = "critical"
+        else:
+            refs = index.partials.get(file_path, [])
+            screens = _screen_refs_from_index(refs)
+            total = len(screens)
+            impact = _determine_impact_level(total)
+
+        return SourceToScreensOutput(
+            source_file=file_path,
+            source_type=source_type,
+            used_in_screens=screens,
+            methods=[],
+            total_screen_count=total,
+            impact_level=impact,
+        )
+
+    if source_type == "helper":
+        # ファイル内のメソッド定義を収集
+        abs_path = project_root / file_path
+        method_names: list[str] = []
+        if abs_path.is_file():
+            content = abs_path.read_text(encoding="utf-8", errors="replace")
+            method_names = re.findall(r"^\s*def\s+([a-z_][a-z0-9_?!]*)", content, re.MULTILINE)
+
+        # 特定メソッド指定があればフィルタ
+        if params.method_name:
+            method_names = [m for m in method_names if m == params.method_name]
+
+        method_mappings: list[MethodScreenMapping] = []
+        all_screens_set: set[str] = set()
+        for method_name in method_names:
+            refs = index.helpers.get(method_name, [])
+            screens = _screen_refs_from_index(refs)
+            count = len(screens)
+            method_mappings.append(MethodScreenMapping(
+                method_name=method_name,
+                line=_find_method_line(abs_path, method_name),
+                used_in_screens=screens,
+                total_screen_count=count,
+                impact_level=_determine_impact_level(count),
+            ))
+            for s in screens:
+                if s.controller_action:
+                    all_screens_set.add(s.controller_action)
+
+        total_count = len(all_screens_set)
+        return SourceToScreensOutput(
+            source_file=file_path,
+            source_type="helper",
+            used_in_screens=[],
+            methods=method_mappings,
+            total_screen_count=total_count,
+            impact_level=_determine_impact_level(total_count),
+        )
+
+    if source_type in ("model", "decorator", "presenter"):
+        # モデル名を推定（User, BlogPost など）
+        model_name = _file_path_to_class_name(file_path)
+        refs = index.models.get(model_name, [])
+        screens = _screen_refs_from_index(refs)
+        total_count = len(screens)
+        return SourceToScreensOutput(
+            source_file=file_path,
+            source_type=source_type,
+            used_in_screens=screens,
+            methods=[],
+            total_screen_count=total_count,
+            impact_level=_determine_impact_level(total_count),
+        )
+
+    # 不明なタイプ
+    return SourceToScreensOutput(
+        source_file=file_path,
+        source_type=source_type,
+        used_in_screens=[],
+        methods=[],
+        total_screen_count=0,
+        impact_level="low",
+    )
+
+
+def _fallback_source_to_screens(
+    file_path: str,
+    source_type: str,
+    builder: ReverseIndexBuilder,
+) -> SourceToScreensOutput:
+    """bridge 失敗時の grep ベースフォールバック。"""
+    if source_type == "partial":
+        refs_raw = builder.build_partial_index_by_grep(file_path)
+        screens = _screen_refs_from_index(refs_raw)
+        total: int | str = len(screens)
+        impact = _determine_impact_level(total)
+    elif source_type == "helper":
+        abs_path = builder._project_root / file_path
+        method_names: list[str] = []
+        if abs_path.is_file():
+            content = abs_path.read_text(encoding="utf-8", errors="replace")
+            method_names = re.findall(r"^\s*def\s+([a-z_][a-z0-9_?!]*)", content, re.MULTILINE)
+        method_mappings: list[MethodScreenMapping] = []
+        all_screens_set: set[str] = set()
+        for method_name in method_names:
+            refs_raw = builder.build_helper_index_by_grep(method_name)
+            screens_m = _screen_refs_from_index(refs_raw)
+            method_mappings.append(MethodScreenMapping(
+                method_name=method_name,
+                line=_find_method_line(abs_path, method_name),
+                used_in_screens=screens_m,
+                total_screen_count=len(screens_m),
+                impact_level=_determine_impact_level(len(screens_m)),
+            ))
+            for s in screens_m:
+                if s.controller_action:
+                    all_screens_set.add(s.controller_action)
+        total_count = len(all_screens_set)
+        output = SourceToScreensOutput(
+            source_file=file_path,
+            source_type="helper",
+            used_in_screens=[],
+            methods=method_mappings,
+            total_screen_count=total_count,
+            impact_level=_determine_impact_level(total_count),
+        )
+        output._metadata = {"source": "file_analysis", "note": "Rails runner unavailable"}
+        return output
+    else:
+        model_name = _file_path_to_class_name(file_path)
+        refs_raw = builder.build_model_index_by_grep(model_name)
+        screens = _screen_refs_from_index(refs_raw)
+        total = len(screens)
+        impact = _determine_impact_level(total)
+
+    output_base = SourceToScreensOutput(
+        source_file=file_path,
+        source_type=source_type,
+        used_in_screens=screens if source_type != "helper" else [],
+        methods=[],
+        total_screen_count=total,
+        impact_level=impact,
+    )
+    output_base._metadata = {"source": "file_analysis", "note": "Rails runner unavailable"}
+    return output_base
+
+
+def _find_method_line(file_path: Path, method_name: str) -> int:
+    """ファイルからメソッド定義の行番号を返す。見つからない場合は 0。"""
+    if not file_path.is_file():
+        return 0
+    try:
+        lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return 0
+    pattern = re.compile(rf"^\s*def\s+{re.escape(method_name)}\b")
+    for i, line in enumerate(lines, start=1):
+        if pattern.match(line):
+            return i
+    return 0
+
+
+def _file_path_to_class_name(file_path: str) -> str:
+    """app/models/user.rb → User, app/models/blog_post.rb → BlogPost"""
+    import os
+    basename = os.path.basename(file_path)
+    stem = re.sub(r"\..+$", "", basename)
+    return "".join(part.capitalize() for part in stem.split("_"))
+
+
 async def _resolve_from_url(url: str, bridge: Any) -> str | None:
     """URLからコントローラ#アクションを解決する（ブリッジ経由）。"""
     try:
@@ -757,7 +1080,25 @@ def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:
                     code="RUNTIME_ERROR", message=str(e)
                 ).model_dump_json(indent=2)
 
-        # source_to_screens / full_inventory は Phase H-3 以降で実装予定
+        if params.mode == ScreenMapMode.SOURCE_TO_SCREENS:
+            if not params.file_path:
+                return ErrorResponse(
+                    code="INVALID_INPUT",
+                    message="source_to_screens モードでは file_path が必要です",
+                ).model_dump_json(indent=2)
+            try:
+                s2s_output = await _source_to_screens_impl(params, bridge, config)
+                return s2s_output.model_dump_json(indent=2, exclude={"_metadata"})
+            except ValueError as e:
+                return ErrorResponse(
+                    code="INVALID_INPUT", message=str(e)
+                ).model_dump_json(indent=2)
+            except Exception as e:
+                return ErrorResponse(
+                    code="RUNTIME_ERROR", message=str(e)
+                ).model_dump_json(indent=2)
+
+        # full_inventory は Phase H-4 以降で実装予定
         return ErrorResponse(
             code="NOT_IMPLEMENTED",
             message=f"モード '{params.mode.value}' は現在実装中です",
