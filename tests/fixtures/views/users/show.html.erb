@@ -1,0 +1,19 @@
+<% content_for :title, "ユーザー詳細" %>
+
+<h1>ユーザー詳細</h1>
+
+<div data-controller="users clipboard">
+  <%= render partial: "users/header", locals: { user: @user } %>
+
+  <p>名前: <%= @user.name %></p>
+  <p>メールアドレス: <%= @user.email %></p>
+
+  <%= render "users/profile" %>
+
+  <ul>
+    <%= render @posts %>
+  </ul>
+
+  <%= user_status_badge(@user) %>
+  <%= format_datetime(@user.created_at) %>
+</div>
