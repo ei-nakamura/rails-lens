@@ -27,6 +27,7 @@ from rails_lens.tools.introspect_model import register as register_introspect
 from rails_lens.tools.list_models import register as register_list_models
 from rails_lens.tools.migration_context import register as register_migration_context
 from rails_lens.tools.refresh_cache import register as register_refresh_cache
+from rails_lens.tools.screen_map import register as register_screen_map
 from rails_lens.tools.test_mapping import register as register_test_mapping
 from rails_lens.tools.trace_callback_chain import register as register_trace
 
@@ -79,6 +80,7 @@ register_circular_dependencies(mcp, _ensure_initialized)
 register_extract_concern_candidate(mcp, _ensure_initialized)
 register_data_flow(mcp, _ensure_initialized)
 register_migration_context(mcp, _ensure_initialized)
+register_screen_map(mcp, _ensure_initialized)
 
 
 def main() -> None:
