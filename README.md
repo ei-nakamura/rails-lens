@@ -7,6 +7,18 @@
 [![Python Versions](https://img.shields.io/pypi/pyversions/rails-lens.svg)](https://pypi.org/project/rails-lens/)
 
 MCP server that reveals implicit Rails dependencies for AI coding tools.
+  
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  
+  DEAR RAILS DEVELOPERS,  
+
+  All your hidden callbacks are belong to us.  
+  All your implicit concerns are belong to us.  
+  All your monkey-patched methods are belong to us.  
+
+  You have no chance to survive make your code.  
+
+  — rails-lens  
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  
 
 ## Overview
 
