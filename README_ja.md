@@ -6,19 +6,37 @@
 [![PyPI version](https://badge.fury.io/py/rails-lens.svg)](https://badge.fury.io/py/rails-lens)
 [![Python Versions](https://img.shields.io/pypi/pyversions/rails-lens.svg)](https://pypi.org/project/rails-lens/)
 
-AIコーディングツール向けに、Railsの暗黙的な依存関係を可視化するMCPサーバー。
+AIコーディングツール向けに、Railsの暗黙的な依存関係を可視化するMCPサーバー。  
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  
+
+  Railsの巨大コードベースに潜む者たちへ  
+
+  貴殿らの隠蔽されしコールバック  
+  暗黙のうちに注入されしConcern  
+  闇に葬られしモンキーパッチ  
+  その全ての「暗黙知」を頂戴する  
+
+  いかなるメタプログラミングの奥底であろうと  
+  我々の目から逃れられると思うな  
+
+  必ず暴き出す
+
+                            ── rails-lens
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  
 
 ## 概要
 
-rails-lensは、RubyonRailsアプリケーションの構造を抽出し、Claude CodeやCursorなどのAIコーディングツールへ提供するMCP（Model Context Protocol）サーバーです。
-コールバック、アソシエーション、コンサーン、動的メソッド生成といったRailsの暗黙的な依存関係をAIツールが理解できるよう支援します。
+rails-lensは、Ruby on Railsアプリケーションの構造を抽出し、Claude CodeやCursorなどのAIコーディングツールへ提供するMCP（Model Context Protocol）サーバーです。
+コールバック、アソシエーション、Concern、動的メソッド生成といったRailsの暗黙的な依存関係をAIツールが理解できるよう支援します。
 
 **18のツール**でAIアシスタントにRailsアプリケーションの深い洞察を提供します:
 
 **Phase 1〜4（コアイントロスペクション）**
 - コールバック・アソシエーション・バリデーション付きでモデルをイントロスペクト
 - コードベース全体からメソッドやクラスへの参照を検索
-- コンサーンや親クラスからの継承を含む完全なコールバックチェーンをトレース
+- Concernや親クラスからの継承を含む完全なコールバックチェーンをトレース
 - モデル間の依存グラフを生成
 - データベーススキーマとルーティングをダンプ
 - 共有コンサーンを解析
