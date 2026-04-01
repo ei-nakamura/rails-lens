@@ -30,6 +30,7 @@ from rails_lens.analyzers.template_parser import TemplateParser
 from rails_lens.analyzers.view_resolver import PartialNode, ViewResolver
 from rails_lens.errors import RailsRunnerExecutionError, RailsRunnerTimeoutError
 from rails_lens.models import ErrorResponse
+from rails_lens.tools.get_routes import _fallback_get_routes
 
 # ============================================================
 # 入力スキーマ
@@ -479,6 +480,36 @@ def _build_layout_info(
 # ============================================================
 
 
+def _resolve_from_url_fallback(url: str, config: Any) -> str | None:
+    """Rails runner不使用時のURL→コントローラ#アクション解決フォールバック。
+
+    config/routes.rb をテキストパースしてURLパターンにマッチするCA文字列を返す。
+    動的セグメント（:id等）を含むURLパターンにも対応する。
+    """
+    data = _fallback_get_routes(config)
+    routes = data.get("routes", [])
+    normalized = url.rstrip("/")
+
+    for route in routes:
+        path = route.get("path", "").rstrip("/")
+        action_str = route.get("action", "")
+        if not path or not action_str or "#" not in action_str:
+            continue
+
+        # :param セグメントを正規表現に変換（例: /projects/:id → /projects/[^/]+）
+        escaped = re.escape(path)
+        pattern = re.sub(r":[^/]+", r"[^/]+", escaped)
+        if re.fullmatch(pattern, normalized):
+            ctrl_str, action = action_str.split("#", 1)
+            # snake_case/namespaced → CamelCaseController
+            parts = ctrl_str.split("/")
+            camel_parts = ["".join(p.capitalize() for p in part.split("_")) for part in parts]
+            ctrl_class = "::".join(camel_parts) + "Controller"
+            return f"{ctrl_class}#{action}"
+
+    return None
+
+
 def _fallback_screen_to_source(
     controller_action: str, config: Any
 ) -> ScreenToSourceOutput:
@@ -613,8 +644,11 @@ async def _screen_to_source_impl(
     controller_action = params.controller_action
     if not controller_action and params.url:
         controller_action = await _resolve_from_url(params.url, bridge)
+        if not controller_action:
+            # bridge失敗時はroutes.rbテキストパースでフォールバック解決
+            controller_action = _resolve_from_url_fallback(params.url, config)
     if not controller_action:
-        raise ValueError("url または controller_action が必要です")
+        raise ValueError(f"URLを解決できませんでした: {params.url}")
 
     # Bridge でルーティング・レイアウト・i18n情報を取得
     mapping: dict[str, Any] = {}

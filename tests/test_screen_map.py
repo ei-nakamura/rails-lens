@@ -17,6 +17,7 @@ from rails_lens.tools.screen_map import (
     ScreenMapMode,
     ScreenToSourceOutput,
     _fallback_screen_to_source,
+    _resolve_from_url_fallback,
     _screen_to_source_impl,
 )
 
@@ -412,3 +413,77 @@ class TestFallbackScreenToSource:
         output = _fallback_screen_to_source("UsersController#index", config)
         assert "一覧" in output.screen.screen_name
         assert output.screen.screen_name_source == "restful_convention"
+
+
+class TestResolveFromUrlFallback:
+    """_resolve_from_url_fallback のテスト"""
+
+    @pytest.fixture
+    def project_with_routes(self, rails_project: Path) -> Path:
+        routes_rb = rails_project / "config" / "routes.rb"
+        routes_rb.write_text(
+            "Rails.application.routes.draw do\n"
+            "  resources :issues\n"
+            "  resources :projects\n"
+            "end\n"
+        )
+        return rails_project
+
+    def test_static_url_resolved(
+        self, config: RailsLensConfig, project_with_routes: Path
+    ) -> None:
+        """静的URL（/issues）が正しくCA解決される"""
+        ca = _resolve_from_url_fallback("/issues", config)
+        assert ca == "IssuesController#index"
+
+    def test_dynamic_url_resolved(
+        self, config: RailsLensConfig, project_with_routes: Path
+    ) -> None:
+        """動的パラメータURL（/projects/1）が正しくCA解決される"""
+        ca = _resolve_from_url_fallback("/projects/1", config)
+        assert ca == "ProjectsController#show"
+
+    def test_unknown_url_returns_none(
+        self, config: RailsLensConfig, project_with_routes: Path
+    ) -> None:
+        """存在しないURLはNoneを返す"""
+        ca = _resolve_from_url_fallback("/nonexistent/path", config)
+        assert ca is None
+
+    def test_missing_routes_file_returns_none(
+        self, config: RailsLensConfig, rails_project: Path
+    ) -> None:
+        """routes.rbがない場合はNoneを返す（routes.rbなしのfixtureを使用）"""
+        ca = _resolve_from_url_fallback("/issues", config)
+        assert ca is None
+
+    @pytest.mark.asyncio
+    async def test_bridge_failure_with_url_uses_fallback(
+        self, config: RailsLensConfig, rails_project: Path
+    ) -> None:
+        """bridge失敗時にURLフォールバックが動作し_fallback_screen_to_sourceが呼ばれる"""
+        routes_rb = rails_project / "config" / "routes.rb"
+        routes_rb.write_text(
+            "Rails.application.routes.draw do\n"
+            "  resources :issues\n"
+            "end\n"
+        )
+        tpl = rails_project / "app" / "views" / "issues" / "index.html.erb"
+        tpl.parent.mkdir(parents=True, exist_ok=True)
+        tpl.write_text("<h1>Issues</h1>\n")
+
+        failing_bridge = MagicMock()
+        failing_bridge.execute = AsyncMock(
+            side_effect=RailsRunnerExecutionError("Rails not found")
+        )
+
+        params = ScreenMapInput(
+            mode=ScreenMapMode.SCREEN_TO_SOURCE,
+            url="/issues",
+        )
+        output = await _screen_to_source_impl(params, failing_bridge, config)
+
+        assert isinstance(output, ScreenToSourceOutput)
+        assert output.screen.controller_action == "IssuesController#index"
+        assert output._metadata is not None
+        assert output._metadata["source"] == "file_analysis"
