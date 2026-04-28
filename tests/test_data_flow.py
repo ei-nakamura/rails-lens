@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from mcp.server.fastmcp import FastMCP
@@ -11,8 +11,9 @@ from rails_lens.bridge.runner import RailsBridge
 from rails_lens.cache.manager import CacheManager
 from rails_lens.config import RailsLensConfig
 from rails_lens.errors import RailsLensError, RailsRunnerExecutionError
-from rails_lens.models import DataFlowInput
+from rails_lens.models import DataFlowInput, DataFlowOutput
 from rails_lens.tools import data_flow as data_flow_module
+from rails_lens.tools.data_flow import data_flow_impl
 
 
 def _make_get_deps(config: RailsLensConfig, bridge: RailsBridge, cache: CacheManager):
@@ -152,3 +153,19 @@ async def test_data_flow_fallback(
     assert parsed["route"]["path"] == "/users"
     assert "User" in parsed["_metadata"]["model_refs_found"]
     assert "create" in parsed["_metadata"]["actions_found"]
+
+
+@pytest.mark.asyncio
+async def test_data_flow_impl_fallback_on_runner_error(
+    config: RailsLensConfig,
+    mock_bridge: RailsBridge,
+) -> None:
+    """RailsRunnerExecutionError 時に _fallback_data_flow が呼ばれ DataFlowOutput が返る"""
+    mock_bridge.execute = AsyncMock(side_effect=RailsRunnerExecutionError("test"))
+    mock_grep = MagicMock()
+
+    params = DataFlowInput(controller_action="UsersController#create")
+    result = await data_flow_impl(params=params, bridge=mock_bridge, grep=mock_grep, config=config)
+
+    assert isinstance(result, DataFlowOutput)
+    assert result.entry_point == "UsersController#create"

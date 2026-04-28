@@ -226,13 +226,19 @@ async def data_flow_impl(
     params: DataFlowInput,
     bridge: Any,
     grep: Any,
+    config: Any = None,
 ) -> DataFlowOutput:
     """MCPデコレータなしで同じロジックを実行し、DataFlowOutput を返す"""
     identifier = params.controller_action or params.model_name or ""
-    raw_data = await bridge.execute(
-        "data_flow.rb",
-        args=[identifier, ""],
-    )
+    try:
+        raw_data = await bridge.execute(
+            "data_flow.rb",
+            args=[identifier, ""],
+        )
+    except (RailsRunnerExecutionError, RailsRunnerTimeoutError, FileNotFoundError, OSError):
+        fallback = _fallback_data_flow(config, params)
+        fallback.pop("_metadata", None)
+        return DataFlowOutput.model_validate(fallback)
 
     routes_raw = raw_data.get("routes", [])
     callbacks_raw = raw_data.get("callbacks", [])

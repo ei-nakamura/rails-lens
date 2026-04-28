@@ -12,8 +12,9 @@ from rails_lens.bridge.runner import RailsBridge
 from rails_lens.cache.manager import CacheManager
 from rails_lens.config import RailsLensConfig
 from rails_lens.errors import RailsLensError, RailsRunnerExecutionError
-from rails_lens.models import TraceCallbackChainInput
+from rails_lens.models import TraceCallbackChainInput, TraceCallbackChainOutput
 from rails_lens.tools import trace_callback_chain as trace_module
+from rails_lens.tools.trace_callback_chain import trace_callback_chain_impl
 
 
 def _make_get_deps(config: RailsLensConfig, bridge: RailsBridge, cache: CacheManager):
@@ -169,3 +170,24 @@ async def test_trace_callback_chain_fallback_on_runner_error(
     kinds = {cb["kind"] for cb in parsed["execution_order"]}
     assert "before" in kinds
     assert "after" in kinds
+
+
+@pytest.mark.asyncio
+async def test_trace_callback_chain_impl_fallback_on_runner_error(
+    config: RailsLensConfig,
+    mock_bridge: RailsBridge,
+    cache_manager: CacheManager,
+) -> None:
+    """_impl: bridge が RailsRunnerExecutionError を返したとき TraceCallbackChainOutput を返す"""
+    mock_bridge.execute = AsyncMock(side_effect=RailsRunnerExecutionError("test"))
+
+    params = TraceCallbackChainInput(model_name="User", lifecycle_event="save")
+    result = await trace_callback_chain_impl(
+        params=params,
+        bridge=mock_bridge,
+        cache=cache_manager,
+        config=config,
+    )
+
+    assert isinstance(result, TraceCallbackChainOutput)
+    assert result.model_name == params.model_name

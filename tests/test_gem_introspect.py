@@ -12,7 +12,7 @@ from rails_lens.bridge.runner import RailsBridge
 from rails_lens.cache.manager import CacheManager
 from rails_lens.config import RailsLensConfig
 from rails_lens.errors import RailsLensError, RailsRunnerExecutionError
-from rails_lens.models import GemIntrospectInput
+from rails_lens.models import GemIntrospectInput, GemIntrospectOutput
 from rails_lens.tools import gem_introspect as gem_module
 
 
@@ -140,3 +140,18 @@ async def test_gem_introspect_fallback(
     # Gemfile.lock のバージョンが反映される
     devise_entry = next(g for g in parsed["gem_methods"] if g["gem_name"] == "devise")
     assert "4.9.3" in devise_entry["method_name"]
+
+
+@pytest.mark.asyncio
+async def test_gem_introspect_impl_fallback_on_runner_error(
+    config: RailsLensConfig,
+    mock_bridge: RailsBridge,
+) -> None:
+    """gem_introspect_impl: RailsRunnerExecutionError時にfallbackしGemIntrospectOutputを返す"""
+    mock_bridge.execute = AsyncMock(side_effect=RailsRunnerExecutionError("test"))
+
+    params = GemIntrospectInput(model_name="User")
+    result = await gem_module.gem_introspect_impl(params=params, bridge=mock_bridge, config=config)
+
+    assert isinstance(result, GemIntrospectOutput)
+    assert result.model_name == params.model_name

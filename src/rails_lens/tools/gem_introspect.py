@@ -91,13 +91,18 @@ def _fallback_gem_introspect(config: Any, params: GemIntrospectInput) -> dict[st
 async def gem_introspect_impl(
     params: GemIntrospectInput,
     bridge: Any,
+    config: Any = None,
 ) -> GemIntrospectOutput:
     """MCPデコレータなしで同じロジックを実行し、GemIntrospectOutput を返す"""
-    raw_data = await bridge.execute(
-        "gem_introspect.rb",
-        args=[params.model_name, params.gem_name or ""],
-    )
-    return GemIntrospectOutput(**raw_data)
+    try:
+        raw_data = await bridge.execute(
+            "gem_introspect.rb",
+            args=[params.model_name, params.gem_name or ""],
+        )
+        return GemIntrospectOutput(**raw_data)
+    except (RailsRunnerExecutionError, RailsRunnerTimeoutError, FileNotFoundError, OSError):
+        fallback = _fallback_gem_introspect(config, params)
+        return GemIntrospectOutput(**fallback)
 
 
 def register(mcp: FastMCP, get_deps: Callable[[], Any]) -> None:

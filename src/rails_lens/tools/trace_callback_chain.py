@@ -18,16 +18,20 @@ async def trace_callback_chain_impl(
     params: TraceCallbackChainInput,
     bridge: Any,
     cache: Any,
+    config: Any = None,
 ) -> TraceCallbackChainOutput:
     """MCPデコレータなしで同じロジックを実行し、TraceCallbackChainOutput を返す"""
-    raw_data = await bridge.execute(
-        "trace_callbacks.rb", args=[params.model_name, params.lifecycle_event]
-    )
-    cache.set(
-        "trace_callback_chain",
-        f"{params.model_name}__{params.lifecycle_event}",
-        raw_data,
-    )
+    try:
+        raw_data = await bridge.execute(
+            "trace_callbacks.rb", args=[params.model_name, params.lifecycle_event]
+        )
+        cache.set(
+            "trace_callback_chain",
+            f"{params.model_name}__{params.lifecycle_event}",
+            raw_data,
+        )
+    except (RailsRunnerExecutionError, RailsRunnerTimeoutError, FileNotFoundError, OSError):
+        raw_data = _fallback_trace_callbacks(config, params)
     execution_order = raw_data.get("execution_order", [])
     mermaid = _generate_mermaid_diagram(
         model_name=raw_data.get("model_name", params.model_name),
